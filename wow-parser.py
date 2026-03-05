@@ -2,6 +2,7 @@ import argparse
 import bisect
 import csv
 import glob
+import json
 import os
 import time
 from datetime import datetime
@@ -9,6 +10,7 @@ from datetime import datetime
 # --- CONFIGURATION ---
 LOG_DIR = "/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
 OUTPUT_CSV = "parsed_combat_data.csv"
+BOSS_KILLS_PATH = "boss_kills.jsonl"
 
 
 def get_latest_log_file(directory):
@@ -272,10 +274,130 @@ def _parse_raw_event(line):
     }
 
 
+def _parse_zone_change_line(line):
+    """Parse a ZONE_CHANGE log line.  Returns (dt, zone_id, zone_name) or None."""
+    if "ZONE_CHANGE" not in line:
+        return None
+    try:
+        header, rest = line.split(",", 1)
+    except ValueError:
+        return None
+    header = header.strip()
+    try:
+        timestamp_str, event_type = header.rsplit(None, 1)
+    except ValueError:
+        return None
+    if event_type != "ZONE_CHANGE":
+        return None
+    try:
+        dt = datetime.strptime(timestamp_str, "%m/%d/%Y %H:%M:%S.%f")
+    except ValueError:
+        return None
+    try:
+        parts = list(csv.reader([rest]))[0]
+    except Exception:
+        return None
+    if len(parts) < 2:
+        return None
+    try:
+        zone_id = int(parts[0])
+    except (ValueError, TypeError):
+        zone_id = 0
+    zone_name = parts[1].strip('"') if len(parts) > 1 else ""
+    return dt, zone_id, zone_name
+
+
+def _parse_encounter_event(line):
+    """Parse an ENCOUNTER_START or ENCOUNTER_END log line.
+
+    ENCOUNTER_START → {event='START', dt, boss_name, zone_id}
+    ENCOUNTER_END   → {event='END',   dt, boss_name, kill_flag}
+    Returns None if the line is neither.
+    """
+    if "ENCOUNTER_START" not in line and "ENCOUNTER_END" not in line:
+        return None
+    try:
+        header, rest = line.split(",", 1)
+    except ValueError:
+        return None
+    header = header.strip()
+    try:
+        timestamp_str, event_type = header.rsplit(None, 1)
+    except ValueError:
+        return None
+    if event_type not in ("ENCOUNTER_START", "ENCOUNTER_END"):
+        return None
+    try:
+        dt = datetime.strptime(timestamp_str, "%m/%d/%Y %H:%M:%S.%f")
+    except ValueError:
+        return None
+    try:
+        parts = list(csv.reader([rest]))[0]
+    except Exception:
+        return None
+    boss_name = parts[1].strip('"') if len(parts) > 1 else "Unknown"
+    if event_type == "ENCOUNTER_START":
+        try:
+            zone_id = int(parts[4]) if len(parts) > 4 else 0
+        except (ValueError, TypeError):
+            zone_id = 0
+        return {"event": "START", "dt": dt, "boss_name": boss_name, "zone_id": zone_id}
+    else:  # ENCOUNTER_END
+        try:
+            kill_flag = int(parts[4]) if len(parts) > 4 else 0
+        except (ValueError, TypeError):
+            kill_flag = 0
+        return {"event": "END", "dt": dt, "boss_name": boss_name, "kill_flag": kill_flag}
+
+
+def extract_boss_kills(lines):
+    """Scan log lines for ENCOUNTER_START/END pairs.
+
+    Returns a list of dicts::
+
+        {boss_name, start_ts, end_ts, kill_flag, zone_id}
+
+    kill_flag=1 → boss killed; 0 → wipe/reset.
+    Timestamps are strings in the same format as the CSV (``%m/%d/%Y %H:%M:%S.%f``).
+    """
+    boss_kills = []
+    open_boss = None  # {boss_name, start_dt, zone_id}
+    for line in lines:
+        ev = _parse_encounter_event(line)
+        if ev is None:
+            continue
+        if ev["event"] == "START":
+            open_boss = {"boss_name": ev["boss_name"], "start_dt": ev["dt"], "zone_id": ev["zone_id"]}
+        elif ev["event"] == "END" and open_boss is not None:
+            boss_kills.append(
+                {
+                    "boss_name": open_boss["boss_name"],
+                    "start_ts": open_boss["start_dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
+                    "end_ts": ev["dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
+                    "kill_flag": ev.get("kill_flag", 0),
+                    "zone_id": open_boss["zone_id"],
+                }
+            )
+            open_boss = None
+    return boss_kills
+
+
+def _write_boss_kills(boss_kills, path=BOSS_KILLS_PATH, mode="w"):
+    """Write boss kill records to a JSON-lines sidecar file."""
+    try:
+        with open(path, mode, encoding="utf-8") as f:
+            for bk in boss_kills:
+                f.write(json.dumps(bk) + "\n")
+        if boss_kills:
+            print(f"  Wrote {len(boss_kills)} boss kill record(s) → {path}")
+    except Exception as e:
+        print(f"Warning: failed to write boss kills: {e}")
+
+
 def detect_encounters(lines, timeout_secs=ENCOUNTER_TIMEOUT_SECS):
     """Scan raw combat-log lines and return a list of encounter intervals:
 
-        [(combat_id, start_dt, end_dt, frozenset(enemy_guids)), ...]
+        [(combat_id, start_dt, end_dt, frozenset(enemy_guids), zone_id, zone_name), ...]
 
     Encounter-boundary rules
     ------------------------
@@ -296,7 +418,22 @@ def detect_encounters(lines, timeout_secs=ENCOUNTER_TIMEOUT_SECS):
     last_hostile_dt = None
     combat_id = 0
 
+    # Zone tracking (updated on every ZONE_CHANGE line)
+    current_zone_id = 0
+    current_zone_name = ""
+    encounter_zone_id = 0  # zone snapshotted when an encounter opens
+    encounter_zone_name = ""
+
     for line in lines:
+        # Detect zone transitions (different line format from combat events)
+        _zc = _parse_zone_change_line(line)
+        if _zc is not None:
+            _, _zid, _zname = _zc
+            if _zname and _zname != "UNKNOWN AREA":
+                current_zone_id = _zid
+                current_zone_name = _zname
+            continue
+
         raw = _parse_raw_event(line)
         if not raw:
             continue
@@ -311,7 +448,16 @@ def detect_encounters(lines, timeout_secs=ENCOUNTER_TIMEOUT_SECS):
         # --- Timeout: force-close an encounter that has gone quiet ---
         if last_hostile_dt is not None and encounter_start is not None:
             if (dt - last_hostile_dt).total_seconds() > timeout_secs:
-                encounters.append((combat_id, encounter_start, last_hostile_dt, frozenset(encounter_enemies)))
+                encounters.append(
+                    (
+                        combat_id,
+                        encounter_start,
+                        last_hostile_dt,
+                        frozenset(encounter_enemies),
+                        encounter_zone_id,
+                        encounter_zone_name,
+                    )
+                )
                 encounter_start = None
                 active_enemies.clear()
                 encounter_enemies.clear()
@@ -336,6 +482,8 @@ def detect_encounters(lines, timeout_secs=ENCOUNTER_TIMEOUT_SECS):
                     # A fresh encounter begins
                     combat_id += 1
                     encounter_start = dt
+                    encounter_zone_id = current_zone_id
+                    encounter_zone_name = current_zone_name
                 active_enemies[enemy_guid] = dt
                 encounter_enemies.add(enemy_guid)
                 last_hostile_dt = dt
@@ -354,14 +502,32 @@ def detect_encounters(lines, timeout_secs=ENCOUNTER_TIMEOUT_SECS):
                 last_hostile_dt = dt
                 if not active_enemies and encounter_start is not None:
                     # All enemies are gone → close encounter
-                    encounters.append((combat_id, encounter_start, dt, frozenset(encounter_enemies)))
+                    encounters.append(
+                        (
+                            combat_id,
+                            encounter_start,
+                            dt,
+                            frozenset(encounter_enemies),
+                            encounter_zone_id,
+                            encounter_zone_name,
+                        )
+                    )
                     encounter_start = None
                     encounter_enemies.clear()
                     last_hostile_dt = None
 
             elif bool(dead_flags & _FLAG_TYPE_PLAYER) and encounter_start is not None:
                 # The player died → close encounter immediately
-                encounters.append((combat_id, encounter_start, dt, frozenset(encounter_enemies)))
+                encounters.append(
+                    (
+                        combat_id,
+                        encounter_start,
+                        dt,
+                        frozenset(encounter_enemies),
+                        encounter_zone_id,
+                        encounter_zone_name,
+                    )
+                )
                 encounter_start = None
                 active_enemies.clear()
                 encounter_enemies.clear()
@@ -369,30 +535,61 @@ def detect_encounters(lines, timeout_secs=ENCOUNTER_TIMEOUT_SECS):
 
     # Close any encounter still open when the log ends
     if encounter_start is not None and last_hostile_dt is not None:
-        encounters.append((combat_id, encounter_start, last_hostile_dt, frozenset(encounter_enemies)))
+        encounters.append(
+            (
+                combat_id,
+                encounter_start,
+                last_hostile_dt,
+                frozenset(encounter_enemies),
+                encounter_zone_id,
+                encounter_zone_name,
+            )
+        )
 
     return encounters
+
+
+def assign_encounter_info(event_dt, encounters):
+    """Binary-search the sorted encounter intervals and return
+    (combat_id, zone_id, zone_name) for the encounter that covers *event_dt*,
+    or (0, 0, '') if the event falls outside all encounter windows."""
+    if event_dt is None or not encounters:
+        return 0, 0, ""
+    # encounters is chronologically sorted (built incrementally above).
+    starts = [e[1] for e in encounters]
+    idx = bisect.bisect_right(starts, event_dt) - 1
+    if idx >= 0:
+        enc = encounters[idx]
+        cid, start, end = enc[0], enc[1], enc[2]
+        if start <= event_dt <= end:
+            zone_id = enc[4] if len(enc) > 4 else 0
+            zone_name = enc[5] if len(enc) > 5 else ""
+            return cid, zone_id, zone_name
+    return 0, 0, ""
 
 
 def assign_encounter_id(event_dt, encounters):
     """Binary-search the sorted encounter intervals and return the combat_id
     that covers *event_dt*, or 0 if the event falls outside all encounters."""
-    if event_dt is None or not encounters:
-        return 0
-    # encounters is chronologically sorted (built incrementally above).
-    starts = [e[1] for e in encounters]
-    idx = bisect.bisect_right(starts, event_dt) - 1
-    if idx >= 0:
-        cid, start, end, _ = encounters[idx]
-        if start <= event_dt <= end:
-            return cid
-    return 0
+    return assign_encounter_info(event_dt, encounters)[0]
 
 
 def export_csv(filepath, csv_path=OUTPUT_CSV):
     """Scan the log file and write parsed player events to a CSV file."""
     print(f"Exporting parsed events to CSV: {csv_path}")
-    header = ["combat_id", "timestamp", "event", "source", "target", "spell_name", "amount", "effective_amount", "type"]
+    header = [
+        "combat_id",
+        "timestamp",
+        "event",
+        "source",
+        "target",
+        "spell_name",
+        "amount",
+        "effective_amount",
+        "type",
+        "zone_id",
+        "zone_name",
+    ]
 
     # Pass 1 – detect encounter intervals using the full (unfiltered) log.
     with open(filepath, "r", encoding="utf-8") as infile:
@@ -416,7 +613,7 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
                 except Exception:
                     dt = None
 
-                cid = assign_encounter_id(dt, encounters)
+                cid, zone_id, zone_name = assign_encounter_info(dt, encounters)
 
                 writer.writerow(
                     [
@@ -429,8 +626,15 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
                         parsed_data.get("amount", 0),
                         parsed_data.get("effective_amount", 0),
                         parsed_data.get("type", ""),
+                        zone_id,
+                        zone_name,
                     ]
                 )
+
+    # Pass 3 – extract boss kill events and write sidecar file.
+    with open(filepath, "r", encoding="utf-8") as infile:
+        boss_kills = extract_boss_kills(infile)
+    _write_boss_kills(boss_kills)
 
 
 def _backup_file(path):
@@ -453,7 +657,19 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
     state (active enemies, open encounters) is preserved across file boundaries.
     """
     print(f"Exporting parsed events from {len(filepaths)} files to CSV: {csv_path}")
-    header = ["combat_id", "timestamp", "event", "source", "target", "spell_name", "amount", "effective_amount", "type"]
+    header = [
+        "combat_id",
+        "timestamp",
+        "event",
+        "source",
+        "target",
+        "spell_name",
+        "amount",
+        "effective_amount",
+        "type",
+        "zone_id",
+        "zone_name",
+    ]
 
     # Pass 1 – stream all files through the encounter detector as one sequence.
     def _all_lines():
@@ -486,7 +702,7 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
                         except Exception:
                             dt = None
 
-                        cid = assign_encounter_id(dt, encounters)
+                        cid, zone_id, zone_name = assign_encounter_info(dt, encounters)
 
                         writer.writerow(
                             [
@@ -499,10 +715,16 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
                                 parsed_data.get("amount", 0),
                                 parsed_data.get("effective_amount", 0),
                                 parsed_data.get("type", ""),
+                                zone_id,
+                                zone_name,
                             ]
                         )
             except Exception:
                 continue
+
+    # Pass 3 – extract boss kill events and write sidecar file.
+    boss_kills = extract_boss_kills(_all_lines())
+    _write_boss_kills(boss_kills)
 
 
 def _read_max_combat_id(csv_path):
@@ -543,6 +765,8 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
         "amount",
         "effective_amount",
         "type",
+        "zone_id",
+        "zone_name",
     ]
 
     # Continue combat_id numbering from what is already in the CSV.
@@ -557,6 +781,15 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
     last_hostile_dt = None  # datetime of the most recent hostile event
     line_buffer: list = []  # raw log lines accumulated since encounter opened
     current_char_name = None
+
+    # Zone tracking
+    current_zone_id = 0
+    current_zone_name = ""
+    encounter_zone_id = 0  # snapshotted when encounter opens
+    encounter_zone_name = ""
+
+    # Boss encounter tracking (ENCOUNTER_START / ENCOUNTER_END)
+    _open_boss = None  # {boss_name, start_dt, zone_id}
 
     def _flush(enc_start, close_dt):
         """Parse buffered lines, stamp with the next combat_id, append to CSV."""
@@ -587,6 +820,8 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                     parsed.get("amount", 0),
                     parsed.get("effective_amount", 0),
                     parsed.get("type", ""),
+                    encounter_zone_id,
+                    encounter_zone_name,
                 ]
             )
         # Drop out-of-combat rows (cid=0) — they carry no combat-meter value.
@@ -651,6 +886,36 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                 continue
 
             for line in new_lines:
+                # ── Detect zone changes ──
+                _zc = _parse_zone_change_line(line)
+                if _zc is not None:
+                    _, _zid, _zname = _zc
+                    if _zname and _zname != "UNKNOWN AREA":
+                        current_zone_id = _zid
+                        current_zone_name = _zname
+
+                # ── Detect scripted boss encounters (ENCOUNTER_START/END) ──
+                _bev = _parse_encounter_event(line)
+                if _bev is not None:
+                    if _bev["event"] == "START":
+                        _open_boss = {
+                            "boss_name": _bev["boss_name"],
+                            "start_dt": _bev["dt"],
+                            "zone_id": _bev["zone_id"],
+                        }
+                    elif _bev["event"] == "END" and _open_boss is not None:
+                        bk = {
+                            "boss_name": _open_boss["boss_name"],
+                            "start_ts": _open_boss["start_dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
+                            "end_ts": _bev["dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
+                            "kill_flag": _bev.get("kill_flag", 0),
+                            "zone_id": _open_boss["zone_id"],
+                        }
+                        _write_boss_kills([bk], mode="a")
+                        kw = "KILL" if bk["kill_flag"] == 1 else "WIPE"
+                        print(f"  Boss {kw}: {bk['boss_name']}")
+                        _open_boss = None
+
                 raw = _parse_raw_event(line)
 
                 # ── Timeout check against the incoming line's timestamp ──
@@ -689,6 +954,8 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                         if encounter_start is None:
                             # Fresh encounter opens on this line.
                             encounter_start = dt
+                            encounter_zone_id = current_zone_id
+                            encounter_zone_name = current_zone_name
                             line_buffer.clear()  # discard any stale out-of-combat lines
                             line_buffer.append(line)  # this line is the opener
                         active_enemies[enemy_guid] = dt
