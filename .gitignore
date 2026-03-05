@@ -1,0 +1,4 @@
+__pycache__
+testdata/
+parsed_combat_data.csv.bak*
+games-wow-show-details.code-workspace
