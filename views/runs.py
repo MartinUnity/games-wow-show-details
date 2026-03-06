@@ -9,7 +9,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from utils.data_engine import compute_runs
+from utils.data_engine import compute_runs, spell_aggregates
 from utils.data_io import _fmt_compact_amount, load_csv
 
 
@@ -77,10 +77,26 @@ def runs_view():
 
     table_rows = []
     for _, r in display_runs.iterrows():
+        # Determine a short player/character name for this run (split on '-' like other views)
+        try:
+            _cids = enc_summary[enc_summary["run_id"] == int(r["run_id"])]["combat_id"].tolist()
+            _raw = load_csv()
+            if _raw is not None and not _raw.empty and _cids:
+                _sub = _raw[_raw["combat_id"].isin(_cids)]
+                try:
+                    _player_mode = _sub["source"].mode()
+                    player_short = str(_player_mode.iloc[0]).split("-")[0] if not _player_mode.empty else ""
+                except Exception:
+                    player_short = ""
+            else:
+                player_short = ""
+        except Exception:
+            player_short = ""
         table_rows.append(
             {
                 "run_id": int(r["run_id"]),
                 "Zone": str(r["zone_name"]),
+                "Player": player_short,
                 "Boss": str(r.get("boss_names", "")) or "",
                 "Date": r["start_dt"].strftime("%m/%d %H:%M") if pd.notna(r["start_dt"]) else "",
                 "Enc": int(r["n_encounters"]),
@@ -88,6 +104,7 @@ def runs_view():
                 "Dmg": int(r["total_damage"]),
                 "Heal": int(r["total_heal"]),
                 "Avg DPS": round(r["avg_dps"], 1),
+                "Avg HPS": round(r["avg_hps"], 1),
             }
         )
     table_df = pd.DataFrame(table_rows)
@@ -119,11 +136,22 @@ def runs_view():
 
             gb = GridOptionsBuilder.from_dataframe(table_df)
             gb.configure_column("run_id", header_name="#", width=40, minWidth=40, maxWidth=40, suppressSizeToFit=True)
-            gb.configure_column("Zone", width=160, minWidth=110)
+            gb.configure_column(
+                "Zone", width=160, minWidth=110, maxWidth=400, cellStyle={"color": "#7CFC00", "fontWeight": "bold"}
+            )
+            gb.configure_column(
+                "Player",
+                header_name="Player",
+                width=100,
+                minWidth=80,
+                maxWidth=140,
+                suppressSizeToFit=True,
+                cellStyle={"color": "#9D89C9", "fontWeight": "bold"},
+            )
             gb.configure_column("Boss", width=150, minWidth=100, cellStyle={"color": "#FFD700", "fontStyle": "italic"})
             gb.configure_column("Date", width=110, minWidth=90, maxWidth=120)
-            gb.configure_column("Enc", width=55, minWidth=45, maxWidth=65, suppressSizeToFit=True)
-            gb.configure_column("Duration", width=80, minWidth=70, maxWidth=90, suppressSizeToFit=True)
+            gb.configure_column("Enc", width=55, minWidth=65, maxWidth=75, suppressSizeToFit=True)
+            gb.configure_column("Duration", width=80, minWidth=100, maxWidth=150, suppressSizeToFit=True)
             gb.configure_column(
                 "Dmg",
                 width=70,
@@ -142,7 +170,8 @@ def runs_view():
                 valueFormatter=compact_fmt,
                 cellStyle={"color": "#00CED1", "fontFamily": "monospace"},
             )
-            gb.configure_column("Avg DPS", width=80, minWidth=70, maxWidth=100, suppressSizeToFit=True)
+            gb.configure_column("Avg DPS", width=120, minWidth=125, maxWidth=150, suppressSizeToFit=True)
+            gb.configure_column("Avg HPS", width=120, minWidth=125, maxWidth=150, suppressSizeToFit=True)
             gb.configure_selection(selection_mode="single", use_checkbox=False)
             gb.configure_default_column(sortable=True, filter=True)
             grid_opts = gb.build()
@@ -497,6 +526,38 @@ def runs_view():
                                         st.caption("No healing recorded.")
                         except Exception:
                             pass
+            except Exception:
+                pass
+
+            # ── Abilities breakdown for this run (damage & healing) ─────
+            try:
+                _run_cids = run_encs["combat_id"].tolist()
+                _raw_df = load_csv()
+                _run_df = _raw_df[_raw_df["combat_id"].isin(_run_cids)].copy()
+                dmg_agg_run = spell_aggregates(_run_df, "damage", top_n=200)
+                heal_agg_run = spell_aggregates(_run_df, "heal", top_n=200)
+                st.subheader("Abilities in this run")
+                ad, ah = st.columns(2)
+                with ad:
+                    st.markdown("**Damage abilities**")
+                    if not dmg_agg_run.empty:
+                        st.dataframe(
+                            dmg_agg_run.style.format({"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}),
+                            height=min(400, 28 * len(dmg_agg_run.head(12))),
+                            width=900,
+                        )
+                    else:
+                        st.write("No damage abilities recorded for this run.")
+                with ah:
+                    st.markdown("**Healing abilities**")
+                    if not heal_agg_run.empty:
+                        st.dataframe(
+                            heal_agg_run.style.format({"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}),
+                            height=min(400, 28 * len(heal_agg_run.head(12))),
+                            width=900,
+                        )
+                    else:
+                        st.write("No healing abilities recorded for this run.")
             except Exception:
                 pass
 

@@ -5,12 +5,19 @@ Thin orchestrator: page config, global CSS, sidebar controls,
 view routing, and session banner.  All business logic lives in
 utils/ and views/ — this file should stay under ~150 lines.
 """
+
 import os
 from datetime import datetime
 
 import altair as alt
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+
+from utils.data_engine import (
+    compute_all_encounters_stats,
+    compute_totals_summary,
+    spell_aggregates,
+)
 
 # ── Imports from the modular packages ────────────────────────────────────────
 from utils.data_io import (
@@ -21,16 +28,11 @@ from utils.data_io import (
     load_hidden,
     toggle_hidden,
 )
-from utils.data_engine import (
-    compute_all_encounters_stats,
-    compute_totals_summary,
-    spell_aggregates,
-)
-from views.summary_sidebar import summary_view
-from views.runs import runs_view
 from views.all_encounters import all_encounters_view
 from views.character_comparison import character_comparison_view
 from views.combat_detail import combat_detail_view
+from views.runs import runs_view
+from views.summary_sidebar import summary_view
 
 # ── Page config (must be the first Streamlit call) ────────────────────────────
 st.set_page_config(page_title="WoW Combat Viewer", layout="wide")
@@ -58,6 +60,10 @@ def main():
     if follow_live:
         st_autorefresh(interval=3000, key="live_autorefresh")  # rerun every 3 s
 
+    if st.sidebar.button("Show Latest", help="Reset selection to the most recent encounter."):
+        st.session_state["combat_select"] = 0
+        st.rerun()
+
     # CSV age indicator
     try:
         age_s = int(datetime.now().timestamp() - os.path.getmtime(CSV_PATH))
@@ -73,6 +79,7 @@ def main():
     # Chart controls: resample and smoothing (seconds)
     resample_s = st.sidebar.selectbox("Resample interval (s)", options=[1, 2, 3, 5], index=1)
     smooth_s = st.sidebar.selectbox("Smoothing window (s, 0=off)", options=[0, 2, 3, 5, 10], index=2)
+    show_replay = st.sidebar.checkbox("Enable 2D Replay", value=False, help="Requires Advanced Combat Logging logs.")
     view = st.sidebar.radio(
         "View", options=["Combat Viewer", "Runs", "All Encounters", "Totals", "Character Comparison"], index=0
     )
@@ -452,9 +459,13 @@ def main():
 
     with col_right:
         if sel_override:
-            combat_detail_view(df, sel_override, resample_s=resample_s, smooth_s=smooth_s, top_n=top_n)
+            combat_detail_view(
+                df, sel_override, resample_s=resample_s, smooth_s=smooth_s, top_n=top_n, show_replay=show_replay
+            )
         else:
-            combat_detail_view(df, combat_to_show, resample_s=resample_s, smooth_s=smooth_s, top_n=top_n)
+            combat_detail_view(
+                df, combat_to_show, resample_s=resample_s, smooth_s=smooth_s, top_n=top_n, show_replay=show_replay
+            )
 
 
 if __name__ == "__main__":

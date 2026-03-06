@@ -57,23 +57,31 @@ def all_encounters_view(df_full, character=None):
             st.dataframe(styled_t, hide_index=True)
         with col_chart:
             try:
-                st.altair_chart(
-                    alt.Chart(top_targets)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("total_damage:Q", title="Total damage dealt"),
-                        y=alt.Y("target:N", sort="-x", title=""),
-                        color=alt.value("#FF6347"),
-                        tooltip=[
-                            "target",
-                            alt.Tooltip("encounters:Q", title="encounters"),
-                            alt.Tooltip("total_damage:Q", format=",", title="total dmg"),
-                            alt.Tooltip("avg_damage:Q", format=",.0f", title="avg dmg/enc"),
-                        ],
-                    )
-                    .properties(height=max(180, 28 * len(top_targets))),
-                    width="stretch",
+                base = alt.Chart(top_targets).encode(
+                    y=alt.Y("target:N", sort="-x", title=""),
                 )
+                bars = base.mark_bar().encode(
+                    x=alt.X("total_damage:Q", title="Total damage dealt"),
+                    color=alt.value("#FF6347"),
+                    tooltip=[
+                        "target",
+                        alt.Tooltip("encounters:Q", title="encounters"),
+                        alt.Tooltip("total_damage:Q", format=",", title="total dmg"),
+                        alt.Tooltip("avg_damage:Q", format=",.0f", title="avg dmg/enc"),
+                    ],
+                )
+                text = base.mark_text(
+                    align="right",
+                    baseline="middle",
+                    dx=-5,
+                    color="#000000",
+                    fontWeight="bold",
+                ).encode(
+                    x=alt.X("total_damage:Q"),
+                    text=alt.Text("total_damage:Q", format=",.0f"),
+                )
+                chart = (bars + text).properties(height=max(100, 35 * len(top_targets)))
+                st.altair_chart(chart, width="stretch")
             except Exception:
                 pass
 

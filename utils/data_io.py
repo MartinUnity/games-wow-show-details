@@ -16,6 +16,19 @@ CSV_PATH = "parsed_combat_data.csv"
 NOTES_PATH = "encounter_notes.jsonl"
 HIDDEN_PATH = "hidden_combats.json"
 BOSS_KILLS_PATH = "boss_kills.jsonl"
+LOG_DIR = "/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
+
+
+# ── Log file helpers ─────────────────────────────────────────────────────────
+
+
+def get_latest_log_file(directory=LOG_DIR):
+    """Finds the most recently modified WoWCombatLog file."""
+    import glob
+
+    search_pattern = os.path.join(directory, "WoWCombatLog-*.txt")
+    log_files = glob.glob(search_pattern)
+    return max(log_files, key=os.path.getmtime) if log_files else None
 
 
 # ── Boss kills ────────────────────────────────────────────────────────────────

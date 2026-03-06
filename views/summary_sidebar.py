@@ -8,7 +8,7 @@ Calls summary_view(df, num_combats) → returns selected_override combat_id or N
 import pandas as pd
 import streamlit as st
 
-from utils.data_io import load_hidden, toggle_hidden
+from utils.data_io import load_hidden
 
 
 def summary_view(df, num_combats=10):

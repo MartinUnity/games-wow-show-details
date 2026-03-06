@@ -6,9 +6,12 @@ header metrics, damage-by-target split bar, ability tables/charts,
 DPS/HPS time-series with spell filter, and rotation timeline.
 """
 
+import os
+
 import altair as alt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from utils.data_engine import combat_time_series, spell_aggregates
 from utils.data_io import (
@@ -18,9 +21,11 @@ from utils.data_io import (
     save_note,
     toggle_hidden,
 )
+from utils.export_share import register_share_ui
+from utils.replay_engine import generate_replay_manuscript, render_replay_viewer
 
 
-def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
+def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5, show_replay=False):
     # Show combat header with first target name if available
     combat_df = df[df["combat_id"] == combat_id].sort_values("timestamp_dt")
 
@@ -125,9 +130,11 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
             _tgt_totals["label"] = _tgt_totals["target"].str.split("-").str[0]
             if len(_tgt_totals) > 1:
                 st.subheader("Damage by target")
+                # Make the stacked bar a bit taller so small label text fits and
+                # so multiple targets are easier to distinguish visually.
                 _split_chart = (
                     alt.Chart(_tgt_totals)
-                    .mark_bar(height=28)
+                    .mark_bar(height=36)
                     .encode(
                         x=alt.X("damage:Q", stack="normalize", title="Share of damage", axis=alt.Axis(format="%")),
                         color=alt.Color("label:N", title="Target", scale=alt.Scale(scheme="tableau10")),
@@ -138,19 +145,22 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
                             alt.Tooltip("pct:Q", format=".1f", title="%"),
                         ],
                     )
-                    .properties(height=50)
+                    .properties(height=90)
                 )
-                st.altair_chart(_split_chart, width="stretch")
-                # compact label row beneath the bar
-                _label_parts = [
-                    f"<span style='color:#aaa'>{r.label}:</span> "
-                    f"<b>{_fmt_compact_amount(r.damage)}</b> ({r.pct:.0f}%)"
-                    for r in _tgt_totals.head(8).itertuples()
-                ]
-                st.markdown(
-                    "<p style='font-size:0.78rem;margin:2px 0 8px 0'>" + " &nbsp;|&nbsp; ".join(_label_parts) + "</p>",
-                    unsafe_allow_html=True,
-                )
+                # Layout the bar and the compact target list side-by-side (60/40)
+                col_bar, col_labels = st.columns([3, 2])
+                with col_bar:
+                    st.altair_chart(_split_chart, width="stretch")
+
+                # Build compact per-target lines for the right-hand column
+                max_labels = 20
+                parts = []
+                for r in _tgt_totals.head(max_labels).itertuples():
+                    parts.append(
+                        f"<div style='font-size:0.75rem;margin:2px 0'><span style='color:#aaa'>{r.label}:</span> <b>{_fmt_compact_amount(r.damage)}</b> <span style='color:#9aa3b2'>({r.pct:.0f}%)</span></div>"
+                    )
+                with col_labels:
+                    st.markdown("<div style='padding-left:8px'>" + "".join(parts) + "</div>", unsafe_allow_html=True)
     except Exception:
         pass
 
@@ -301,7 +311,33 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
     except Exception:
         pass
 
+    # Share / Export (CSV + optional GIF replay)
+    try:
+        register_share_ui(combat_df, combat_id)
+    except Exception:
+        pass
+
     with st.expander("Recent events", expanded=False):
         st.dataframe(
             combat_df.tail(200)[["timestamp", "event", "source", "spell_name", "amount", "effective_amount", "type"]]
         )
+
+    # ── Replay Viewer (Positional Data) ─────────────────────────────────
+    from utils.data_io import LOG_DIR
+
+    # Hard-linked to the test boss fight log as requested
+    latest_log = os.path.join(os.getcwd(), "testdata/WoWCombatLog-030526_164213.txt")
+
+    if show_replay and os.path.exists(latest_log):
+        st.subheader("2D Replay (Positional)")
+        with st.spinner("Building replay manuscript..."):
+            try:
+                # We need the raw log to get the X,Y data that isn't in the CSV
+                manuscript = generate_replay_manuscript(combat_df, latest_log)
+                if manuscript:
+                    replay_html = render_replay_viewer(manuscript)
+                    components.html(replay_html, height=520)
+                else:
+                    st.info("No positional data found for this combat in the latest log.")
+            except Exception as e:
+                st.error(f"Failed to load replay: {e}")
