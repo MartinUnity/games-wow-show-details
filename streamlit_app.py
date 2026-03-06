@@ -1016,7 +1016,7 @@ def runs_view():
             )
             rc4.metric("Avg DPS", f"{rm['avg_dps']:.1f}")
 
-            # Encounter list for this run
+            # Build encounter rows — rendered at the bottom of this detail section
             enc_rows = []
             for _, er in run_encs.iterrows():
                 enc_rows.append(
@@ -1029,35 +1029,6 @@ def runs_view():
                         "DPS": round(er["total_damage"] / er["duration_s"], 1) if er["duration_s"] > 0 else 0.0,
                     }
                 )
-            enc_df_disp = pd.DataFrame(enc_rows)
-            st.dataframe(
-                enc_df_disp.style.format({"Dmg": "{:,}", "DPS": "{:.1f}"}),
-                hide_index=True,
-                width="stretch",
-            )
-
-            # DPS bar chart across encounters in this run
-            if len(enc_rows) > 1:
-                try:
-                    chart_df = pd.DataFrame(enc_rows).assign(cid_str=lambda d: d["#"].astype(str))
-                    st.altair_chart(
-                        alt.Chart(chart_df)
-                        .mark_bar(color="#7CFC00", opacity=0.85)
-                        .encode(
-                            x=alt.X("cid_str:N", title="Combat ID", sort=None),
-                            y=alt.Y("DPS:Q", title="DPS"),
-                            tooltip=[
-                                alt.Tooltip("cid_str:N", title="Combat"),
-                                "Target",
-                                alt.Tooltip("DPS:Q", format=".1f"),
-                                "Duration",
-                            ],
-                        )
-                        .properties(height=220, title=f"DPS per encounter — {zone_label}"),
-                        width="stretch",
-                    )
-                except Exception:
-                    pass
 
             # ── Participant breakdown ──────────────────────────────────────
             try:
@@ -1132,60 +1103,83 @@ def runs_view():
                         width="stretch",
                     )
 
-                    # DPS / HPS bar charts side-by-side
+                    # DPS / HPS pie charts side-by-side
                     _has_dmg = part_df["Damage"].sum() > 0
                     _has_heal = part_df["Healing"].sum() > 0
-                    _chart_cols = st.columns(2) if (_has_dmg and _has_heal) else [st.container(), None]
-
                     _color_scale = alt.Scale(domain=["Player", "Follower NPC"], range=["#7CFC00", "#FF8C00"])
 
+                    _pie_cols = st.columns(2 if (_has_dmg and _has_heal) else 1)
+
                     if _has_dmg:
-                        with _chart_cols[0]:
-                            _dmg_df = part_df[part_df["Damage"] > 0]
-                            try:
+                        _dmg_df = part_df[part_df["Damage"] > 0].copy()
+                        _dmg_df["pct"] = (_dmg_df["Damage"] / _dmg_df["Damage"].sum() * 100).round(1)
+                        try:
+                            with _pie_cols[0]:
                                 st.altair_chart(
                                     alt.Chart(_dmg_df)
-                                    .mark_bar(opacity=0.9)
+                                    .mark_arc(outerRadius=110)
                                     .encode(
-                                        x=alt.X("DPS:Q", title="DPS"),
-                                        y=alt.Y("Source:N", sort="-x", title=""),
-                                        color=alt.Color("Role:N", scale=_color_scale, legend=None),
+                                        theta=alt.Theta("Damage:Q"),
+                                        color=alt.Color(
+                                            "Source:N",
+                                            scale=alt.Scale(
+                                                domain=_dmg_df["Source"].tolist(),
+                                                range=[
+                                                    "#7CFC00" if r == "Player" else "#FF8C00"
+                                                    for r in _dmg_df["Role"].tolist()
+                                                ],
+                                            ),
+                                            legend=alt.Legend(title="Source"),
+                                        ),
                                         tooltip=[
-                                            "Source",
-                                            "Role",
+                                            alt.Tooltip("Source:N"),
+                                            alt.Tooltip("Role:N"),
+                                            alt.Tooltip("Damage:Q", format=",", title="Damage"),
                                             alt.Tooltip("DPS:Q", format=".1f"),
-                                            alt.Tooltip("Damage:Q", format=","),
+                                            alt.Tooltip("pct:Q", format=".1f", title="%"),
                                         ],
                                     )
-                                    .properties(height=max(80, 36 * len(_dmg_df)), title="DPS by participant"),
+                                    .properties(height=260, title="Damage share"),
                                     width="stretch",
                                 )
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
 
-                    if _has_heal and _chart_cols[1] is not None:
-                        with _chart_cols[1]:
-                            _heal_df = part_df[part_df["Healing"] > 0]
-                            try:
+                    if _has_heal:
+                        _heal_df = part_df[part_df["Healing"] > 0].copy()
+                        _heal_df["pct"] = (_heal_df["Healing"] / _heal_df["Healing"].sum() * 100).round(1)
+                        _pie_heal_col = _pie_cols[1] if (_has_dmg and len(_pie_cols) > 1) else _pie_cols[0]
+                        try:
+                            with _pie_heal_col:
                                 st.altair_chart(
                                     alt.Chart(_heal_df)
-                                    .mark_bar(opacity=0.9)
+                                    .mark_arc(outerRadius=110)
                                     .encode(
-                                        x=alt.X("HPS:Q", title="HPS"),
-                                        y=alt.Y("Source:N", sort="-x", title=""),
-                                        color=alt.Color("Role:N", scale=_color_scale, legend=None),
+                                        theta=alt.Theta("Healing:Q"),
+                                        color=alt.Color(
+                                            "Source:N",
+                                            scale=alt.Scale(
+                                                domain=_heal_df["Source"].tolist(),
+                                                range=[
+                                                    "#7CFC00" if r == "Player" else "#FF8C00"
+                                                    for r in _heal_df["Role"].tolist()
+                                                ],
+                                            ),
+                                            legend=alt.Legend(title="Source"),
+                                        ),
                                         tooltip=[
-                                            "Source",
-                                            "Role",
+                                            alt.Tooltip("Source:N"),
+                                            alt.Tooltip("Role:N"),
+                                            alt.Tooltip("Healing:Q", format=",", title="Healing"),
                                             alt.Tooltip("HPS:Q", format=".1f"),
-                                            alt.Tooltip("Healing:Q", format=","),
+                                            alt.Tooltip("pct:Q", format=".1f", title="%"),
                                         ],
                                     )
-                                    .properties(height=max(80, 36 * len(_heal_df)), title="HPS by participant"),
+                                    .properties(height=260, title="Healing share"),
                                     width="stretch",
                                 )
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
 
                     # Per-encounter DPS trend per participant (only if >1 encounter)
                     if len(_run_cids) > 1 and len(participants) > 1:
@@ -1271,6 +1265,36 @@ def runs_view():
                             pass
             except Exception:
                 pass
+
+            # ── Encounter list (at the bottom) ────────────────────────────
+            st.subheader("Encounters")
+            enc_df_disp = pd.DataFrame(enc_rows)
+            st.dataframe(
+                enc_df_disp.style.format({"Dmg": "{:,}", "DPS": "{:.1f}"}),
+                hide_index=True,
+                width="stretch",
+            )
+            if len(enc_rows) > 1:
+                try:
+                    chart_df = pd.DataFrame(enc_rows).assign(cid_str=lambda d: d["#"].astype(str))
+                    st.altair_chart(
+                        alt.Chart(chart_df)
+                        .mark_bar(color="#7CFC00", opacity=0.85)
+                        .encode(
+                            x=alt.X("cid_str:N", title="Combat ID", sort=None),
+                            y=alt.Y("DPS:Q", title="DPS"),
+                            tooltip=[
+                                alt.Tooltip("cid_str:N", title="Combat"),
+                                "Target",
+                                alt.Tooltip("DPS:Q", format=".1f"),
+                                "Duration",
+                            ],
+                        )
+                        .properties(height=220, title=f"DPS per encounter — {zone_label}"),
+                        width="stretch",
+                    )
+                except Exception:
+                    pass
 
             st.caption("Navigate to **Combat Viewer** to inspect any individual encounter in full detail.")
 
