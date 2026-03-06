@@ -402,7 +402,7 @@ def runs_view():
                                             alt.Tooltip("pct:Q", format=".1f", title="%"),
                                         ],
                                     )
-                                    .properties(height=260, title="Damage share"),
+                                    .properties(height=300, title="Damage share"),
                                     width="stretch",
                                 )
                         except Exception:
@@ -438,7 +438,7 @@ def runs_view():
                                             alt.Tooltip("pct:Q", format=".1f", title="%"),
                                         ],
                                     )
-                                    .properties(height=260, title="Healing share"),
+                                    .properties(height=300, title="Healing share"),
                                     width="stretch",
                                 )
                         except Exception:
@@ -558,6 +558,64 @@ def runs_view():
                         )
                     else:
                         st.write("No healing abilities recorded for this run.")
+            except Exception:
+                pass
+
+            # ── Abilities pies (Damage / Healing) — use the ability tables above
+            try:
+                # dmg_agg_run and heal_agg_run are computed in the abilities section above.
+                if "dmg_agg_run" in locals() and not dmg_agg_run.empty:
+                    dmg_pie_df = dmg_agg_run.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"})
+                else:
+                    dmg_pie_df = pd.DataFrame()
+
+                if "heal_agg_run" in locals() and not heal_agg_run.empty:
+                    heal_pie_df = heal_agg_run.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"})
+                else:
+                    heal_pie_df = pd.DataFrame()
+
+                if not dmg_pie_df.empty or not heal_pie_df.empty:
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if not dmg_pie_df.empty:
+                            try:
+                                st.altair_chart(
+                                    alt.Chart(dmg_pie_df)
+                                    .mark_arc(outerRadius=180)
+                                    .encode(
+                                        theta=alt.Theta("Total:Q"),
+                                        color=alt.Color("Spell:N", legend=alt.Legend(title="Spell")),
+                                        tooltip=[
+                                            alt.Tooltip("Spell:N"),
+                                            alt.Tooltip("Total:Q", format=",", title="Total"),
+                                            alt.Tooltip("Pct:Q", format=".1f", title="%"),
+                                        ],
+                                    )
+                                    .properties(title="Damage by ability (this run)", height=520),
+                                    width="stretch",
+                                )
+                            except Exception:
+                                pass
+                    with col_b:
+                        if not heal_pie_df.empty:
+                            try:
+                                st.altair_chart(
+                                    alt.Chart(heal_pie_df)
+                                    .mark_arc(outerRadius=180)
+                                    .encode(
+                                        theta=alt.Theta("Total:Q"),
+                                        color=alt.Color("Spell:N", legend=alt.Legend(title="Spell")),
+                                        tooltip=[
+                                            alt.Tooltip("Spell:N"),
+                                            alt.Tooltip("Total:Q", format=",", title="Total"),
+                                            alt.Tooltip("Pct:Q", format=".1f", title="%"),
+                                        ],
+                                    )
+                                    .properties(title="Healing by ability (this run)", height=520),
+                                    width="stretch",
+                                )
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
