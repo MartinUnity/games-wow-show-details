@@ -701,12 +701,10 @@ def compute_runs(path=CSV_PATH, gap_minutes=20):
         _tgt_df = enc_df[(enc_df["type"] == "damage") & enc_df["target"].notna() & (enc_df["target"] != "")]
         if _player:
             _tgt_df = _tgt_df[_tgt_df["target"] != _player]
-        enc_target = (
-            _tgt_df.groupby("combat_id")["target"]
-            .agg(lambda x: x.value_counts().index[0] if len(x) else "")
-            .str.split("-")
-            .str[0]
-        )
+        # Keep the full target string (e.g. "192-Name-..." or "Name-Server") so
+        # the Runs view displays the same human-friendly target text as
+        # the Combat Viewer (`target`) column instead of only the prefix.
+        enc_target = _tgt_df.groupby("combat_id")["target"].agg(lambda x: x.value_counts().index[0] if len(x) else "")
     except Exception:
         enc_target = pd.Series(dtype=str)
 
@@ -974,8 +972,9 @@ def runs_view():
                         alt.Tooltip("avg_dps:Q", format=".1f", title="Avg DPS"),
                     ],
                 )
-                .properties(height=max(120, 28 * len(zone_agg)), title="Damage by zone (all runs)"),
+                .properties(height=max(120, 28 * len(zone_agg)), title="Damage by zones (all runs)"),
                 width="stretch",
+                height=len(zone_agg) * 28 + 100,
             )
         except Exception:
             pass
@@ -1281,8 +1280,8 @@ def runs_view():
                         alt.Chart(chart_df)
                         .mark_bar(color="#7CFC00", opacity=0.85)
                         .encode(
-                            x=alt.X("cid_str:N", title="Combat ID", sort=None),
-                            y=alt.Y("DPS:Q", title="DPS"),
+                            x=alt.X("DPS:Q", title="DPS"),
+                            y=alt.Y("cid_str:N", title="Combat ID", sort=None),
                             tooltip=[
                                 alt.Tooltip("cid_str:N", title="Combat"),
                                 "Target",
@@ -1290,12 +1289,12 @@ def runs_view():
                                 "Duration",
                             ],
                         )
-                        .properties(height=220, title=f"DPS per encounter — {zone_label}"),
+                        .properties(height=len(enc_rows) * 30, title=f"DPS per encounter — {zone_label}"),
                         width="stretch",
                     )
-                except Exception:
+                except Exception as e:
+                    # Fallback selectbox - this should already be above when AgGrid fails
                     pass
-
             st.caption("Navigate to **Combat Viewer** to inspect any individual encounter in full detail.")
 
 
@@ -1581,19 +1580,18 @@ def all_encounters_view(df_full, character=None):
 def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
     # Show combat header with first target name if available
     combat_df = df[df["combat_id"] == combat_id].sort_values("timestamp_dt")
-    target_name = ""
-    try:
-        if not combat_df.empty and "target" in combat_df.columns:
+
+    if "target" in combat_df.columns:
+        try:
             nonempty = combat_df[~combat_df["target"].isnull() & (combat_df["target"] != "")]
             if not nonempty.empty:
                 target_name = str(nonempty.iloc[0]["target"]).strip()
-    except Exception:
+        except Exception:
+            target_name = ""
+    else:
         target_name = ""
 
-    if target_name:
-        st.header(f"Combat {combat_id} — {target_name}")
-    else:
-        st.header(f"Combat {combat_id}")
+    st.header(f"Combat {combat_id}")
 
     # Hide / unhide button
     _hidden = load_hidden()
