@@ -958,24 +958,31 @@ def runs_view():
             .sort_values("total_damage", ascending=False)
         )
         try:
-            st.altair_chart(
-                alt.Chart(zone_agg)
-                .mark_bar()
-                .encode(
-                    x=alt.X("total_damage:Q", title="Total Damage"),
-                    y=alt.Y("zone_name:N", sort="-x", title=""),
-                    color=alt.value("#7CFC00"),
-                    tooltip=[
-                        alt.Tooltip("zone_name:N", title="Zone"),
-                        alt.Tooltip("runs:Q", title="Runs"),
-                        alt.Tooltip("total_damage:Q", format=",", title="Total Dmg"),
-                        alt.Tooltip("avg_dps:Q", format=".1f", title="Avg DPS"),
-                    ],
-                )
-                .properties(height=max(120, 28 * len(zone_agg)), title="Damage by zones (all runs)"),
-                width="stretch",
-                height=len(zone_agg) * 28 + 100,
+            base = alt.Chart(zone_agg).encode(
+                y=alt.Y("zone_name:N", sort="-x", title=""),
             )
+            bars = base.mark_bar().encode(
+                x=alt.X("total_damage:Q", title="Total Damage"),
+                color=alt.value("#7CFC00"),
+                tooltip=[
+                    alt.Tooltip("zone_name:N", title="Zone"),
+                    alt.Tooltip("runs:Q", title="Runs"),
+                    alt.Tooltip("total_damage:Q", format=",", title="Total Dmg"),
+                    alt.Tooltip("avg_dps:Q", format=".1f", title="Avg DPS"),
+                ],
+            )
+            text = base.mark_text(
+                align="right",
+                baseline="middle",
+                dx=-5,  # Slightly inside the bar from the right
+                color="#000000",  # Dark color for better contrast against lime-green bar
+                fontWeight="bold",
+            ).encode(
+                x=alt.X("total_damage:Q"),
+                text=alt.Text("total_damage:Q", format=",.0f"),
+            )
+            chart = (bars + text).properties(height=max(120, 28 * len(zone_agg)), title="Damage by zones (all runs)")
+            st.altair_chart(chart, width="stretch", height=len(zone_agg) * 28 + 100)
         except Exception:
             pass
 
