@@ -341,9 +341,15 @@ def runs_view():
 
                 # Compute per-encounter absorb (if present in raw data)
                 try:
-                    _abs_amt = int(
-                        _enc_raw[(_enc_raw["combat_id"] == _cid) & (_enc_raw["type"] == "absorb")]["effective_amount"].sum()
-                    ) if (_enc_raw is not None and not _enc_raw.empty) else 0
+                    _abs_amt = (
+                        int(
+                            _enc_raw[(_enc_raw["combat_id"] == _cid) & (_enc_raw["type"] == "absorb")][
+                                "effective_amount"
+                            ].sum()
+                        )
+                        if (_enc_raw is not None and not _enc_raw.empty)
+                        else 0
+                    )
                 except Exception:
                     _abs_amt = 0
 
@@ -379,16 +385,13 @@ def runs_view():
                 participants = []
                 for src, grp in _run_df.groupby("source"):
                     total_dmg = float(grp[grp["type"] == "damage"]["effective_amount"].sum())
-                    total_heal_only = float(grp[grp["type"] == "heal"]["effective_amount"].sum())
-                    total_absorb = float(grp[grp["type"] == "absorb"]["effective_amount"].sum())
-                    total_heal = total_heal_only + total_absorb
+                    total_heal = float(grp[grp["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
                     if total_dmg == 0 and total_heal == 0:
                         continue
                     # Active time = sum of encounter durations this source appears in
                     active_dur = sum(_enc_dur.get(cid, 0) for cid in grp["combat_id"].unique())
                     dps = total_dmg / active_dur if active_dur > 0 else 0.0
-                    hps = total_heal_only / active_dur if active_dur > 0 else 0.0
-                    aps = total_absorb / active_dur if active_dur > 0 else 0.0
+                    hps = total_heal / active_dur if active_dur > 0 else 0.0
                     role, short = _classify(src)
                     participants.append(
                         {
@@ -396,10 +399,8 @@ def runs_view():
                             "Role": role,
                             "Damage": int(total_dmg),
                             "DPS": round(dps, 1),
-                            "Healing": int(total_heal_only),
+                            "Healing": int(total_heal),
                             "HPS": round(hps, 1),
-                            "Absorb": int(total_absorb),
-                            "APS": round(aps, 1),
                         }
                     )
 
@@ -424,14 +425,7 @@ def runs_view():
 
                     st.dataframe(
                         part_df.style.format(
-                            {
-                                "Damage": "{:,}",
-                                "DPS": "{:.1f}",
-                                "Healing": "{:,}",
-                                "HPS": "{:.1f}",
-                                "Absorb": "{:,}",
-                                "APS": "{:.1f}",
-                            }
+                            {"Damage": "{:,}", "DPS": "{:.1f}", "Healing": "{:,}", "HPS": "{:.1f}"}
                         ).apply(
                             lambda row: [
                                 (
@@ -526,130 +520,119 @@ def runs_view():
                             pass
 
                     # Per-encounter DPS trend per participant (only if >1 encounter)
-                    if "dmg_agg_run" in locals() and not dmg_agg_run.empty:
-                        dmg_pie_df = dmg_agg_run.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"}).copy()
-                        # Add % to legend labels - we use a specific suffix to split on in the expression if needed,
-                        # but here we'll just format the string.
-                        dmg_pie_df["Spell_Lbl"] = dmg_pie_df.apply(
-                            lambda r: f"{r['Spell']} \u00bb {r['Pct']:>4.1f}%", axis=1
-                        )
-                    else:
-                        dmg_pie_df = pd.DataFrame()
-
-                    if "heal_agg" in locals() and not heal_agg.empty:
-                        heal_pie_df = heal_agg.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"}).copy()
-                        heal_pie_df["Spell_Lbl"] = heal_pie_df.apply(
-                            lambda r: f"{r['Spell']} \u00bb {r['Pct']:>4.1f}%", axis=1
-                        )
-                    else:
-                        heal_pie_df = pd.DataFrame()
-
-                    if "absorb_agg" in locals() and not absorb_agg.empty:
-                        absorb_pie_df = absorb_agg.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"}).copy()
-                        absorb_pie_df["Spell_Lbl"] = absorb_pie_df.apply(
-                            lambda r: f"{r['Spell']} \u00bb {r['Pct']:>4.1f}%", axis=1
-                        )
-                    else:
-                        absorb_pie_df = pd.DataFrame()
-
-                    if not dmg_pie_df.empty or not heal_pie_df.empty or not absorb_pie_df.empty:
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            if not dmg_pie_df.empty:
-                                try:
+                    if len(_run_cids) > 1 and len(participants) > 1:
+                        try:
+                            _trend_rows = []
+                            for _cid in _run_cids:
+                                _enc_slice = _run_df[_run_df["combat_id"] == _cid]
+                                _dur = _enc_dur.get(_cid, 0)
+                                for _src, _sgrp in _enc_slice.groupby("source"):
+                                    _sd = float(_sgrp[_sgrp["type"] == "damage"]["effective_amount"].sum())
+                                    _sh = float(_sgrp[_sgrp["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
+                                    if _sd == 0 and _sh == 0:
+                                        continue
+                                    _role, _short = _classify(_src)
+                                    _trend_rows.append(
+                                        {
+                                            "Combat": str(_cid),
+                                            "Source": _short,
+                                            "Role": _role,
+                                            "DPS": round(_sd / _dur, 1) if _dur > 0 else 0.0,
+                                            "HPS": round(_sh / _dur, 1) if _dur > 0 else 0.0,
+                                        }
+                                    )
+                            if _trend_rows:
+                                _trend_df = pd.DataFrame(_trend_rows)
+                                # Natural sort order for combat IDs
+                                _cid_order = [str(c) for c in _run_cids]
+                                tab_tdps, tab_thps = st.tabs(
+                                    ["DPS by encounter (per participant)", "HPS by encounter (per participant)"]
+                                )
+                                with tab_tdps:
                                     st.altair_chart(
-                                        alt.Chart(dmg_pie_df)
-                                        .mark_arc(outerRadius=180)
+                                        alt.Chart(_trend_df)
+                                        .mark_line(point=True, strokeWidth=2)
                                         .encode(
-                                            theta=alt.Theta("Total:Q"),
-                                            color=alt.Color(
-                                                "Spell_Lbl:N",
-                                                legend=alt.Legend(
-                                                    title="Spell",
-                                                    orient="right",
-                                                    labelLimit=400,
-                                                    labelFont="monospace",
-                                                    labelFontSize=12,
-                                                    labelColor="#CCCCCC",
+                                            x=alt.X("Combat:N", sort=_cid_order, title="Combat"),
+                                            y=alt.Y("DPS:Q", title="DPS"),
+                                            color=alt.Color("Source:N", legend=alt.Legend(title="Source")),
+                                            strokeDash=alt.StrokeDash(
+                                                "Role:N",
+                                                scale=alt.Scale(
+                                                    domain=["Player", "Follower NPC"],
+                                                    range=[[1, 0], [4, 2]],
                                                 ),
-                                                sort=alt.SortField("Total", order="descending"),
+                                                legend=None,
                                             ),
-                                            tooltip=[
-                                                alt.Tooltip("Spell:N"),
-                                                alt.Tooltip("Total:Q", format=",", title="Total"),
-                                                alt.Tooltip("Pct:Q", format=".1f", title="%"),
-                                            ],
+                                            tooltip=["Combat", "Source", "Role", alt.Tooltip("DPS:Q", format=".1f")],
                                         )
-                                        .properties(title="Damage by ability (this run)", height=560),
+                                        .properties(height=240),
                                         width="stretch",
                                     )
-                                except Exception:
-                                    pass
-                        with col_b:
-                            # Show healing pie (heals)
-                            if not heal_pie_df.empty:
-                                try:
-                                    st.altair_chart(
-                                        alt.Chart(heal_pie_df)
-                                        .mark_arc(outerRadius=140)
-                                        .encode(
-                                            theta=alt.Theta("Total:Q"),
-                                            color=alt.Color(
-                                                "Spell_Lbl:N",
-                                                legend=alt.Legend(
-                                                    title="Spell",
-                                                    orient="right",
-                                                    labelLimit=400,
-                                                    labelFont="monospace",
-                                                    labelFontSize=11,
-                                                    labelColor="#CCCCCC",
+                                with tab_thps:
+                                    _hps_trend = _trend_df[_trend_df["HPS"] > 0]
+                                    if not _hps_trend.empty:
+                                        st.altair_chart(
+                                            alt.Chart(_hps_trend)
+                                            .mark_line(point=True, strokeWidth=2)
+                                            .encode(
+                                                x=alt.X("Combat:N", sort=_cid_order, title="Combat"),
+                                                y=alt.Y("HPS:Q", title="HPS"),
+                                                color=alt.Color("Source:N", legend=alt.Legend(title="Source")),
+                                                strokeDash=alt.StrokeDash(
+                                                    "Role:N",
+                                                    scale=alt.Scale(
+                                                        domain=["Player", "Follower NPC"],
+                                                        range=[[1, 0], [4, 2]],
+                                                    ),
+                                                    legend=None,
                                                 ),
-                                                sort=alt.SortField("Total", order="descending"),
-                                            ),
-                                            tooltip=[
-                                                alt.Tooltip("Spell:N"),
-                                                alt.Tooltip("Total:Q", format=",", title="Total"),
-                                                alt.Tooltip("Pct:Q", format=".1f", title="%"),
-                                            ],
+                                                tooltip=[
+                                                    "Combat",
+                                                    "Source",
+                                                    "Role",
+                                                    alt.Tooltip("HPS:Q", format=".1f"),
+                                                ],
+                                            )
+                                            .properties(height=240),
+                                            width="stretch",
                                         )
-                                        .properties(title="Healing by ability (this run)", height=280),
-                                        width="stretch",
-                                    )
-                                except Exception:
-                                    pass
+                                    else:
+                                        st.caption("No healing recorded.")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
-                            # Show absorb pie (if present)
-                            if not absorb_pie_df.empty:
-                                try:
-                                    st.altair_chart(
-                                        alt.Chart(absorb_pie_df)
-                                        .mark_arc(outerRadius=140)
-                                        .encode(
-                                            theta=alt.Theta("Total:Q"),
-                                            color=alt.Color(
-                                                "Spell_Lbl:N",
-                                                legend=alt.Legend(
-                                                    title="Spell",
-                                                    orient="right",
-                                                    labelLimit=400,
-                                                    labelFont="monospace",
-                                                    labelFontSize=11,
-                                                    labelColor="#CCCCCC",
-                                                ),
-                                                sort=alt.SortField("Total", order="descending"),
-                                            ),
-                                            tooltip=[
-                                                alt.Tooltip("Spell:N"),
-                                                alt.Tooltip("Total:Q", format=",", title="Total"),
-                                                alt.Tooltip("Pct:Q", format=".1f", title="%"),
-                                            ],
-                                        )
-                                        .properties(title="Absorb by ability (this run)", height=280),
-                                        width="stretch",
-                                    )
-                                except Exception:
-                                    pass
-                        st.write("No absorb abilities recorded for this run.")
+            # ── Abilities breakdown for this run (damage & healing) ─────
+            try:
+                _run_cids = run_encs["combat_id"].tolist()
+                _raw_df = load_csv()
+                _run_df = _raw_df[_raw_df["combat_id"].isin(_run_cids)].copy()
+                dmg_agg_run = spell_aggregates(_run_df, "damage", top_n=200)
+                heal_agg_run = spell_aggregates(_run_df, ["heal", "absorb"], top_n=200)
+                st.subheader("Abilities in this run")
+                ad, ah = st.columns(2)
+                with ad:
+                    st.markdown("**Damage abilities**")
+                    if not dmg_agg_run.empty:
+                        st.dataframe(
+                            dmg_agg_run.style.format({"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}),
+                            height=min(400, 28 * len(dmg_agg_run.head(12))),
+                            width=900,
+                        )
+                    else:
+                        st.write("No damage abilities recorded for this run.")
+                with ah:
+                    st.markdown("**Healing abilities**")
+                    if not heal_agg_run.empty:
+                        st.dataframe(
+                            heal_agg_run.style.format({"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}),
+                            height=min(400, 28 * len(heal_agg_run.head(12))),
+                            width=900,
+                        )
+                    else:
+                        st.write("No healing abilities recorded for this run.")
             except Exception:
                 pass
 
@@ -829,7 +812,7 @@ def runs_view():
                         .configure_view(strokeOpacity=0)  # Cleans up the grid look
                     )
 
-                    st.altair_chart(final_chart, use_container_width=True)
+                    st.altair_chart(final_chart, width="stretch")
 
                 except Exception as e:
                     st.error(f"Chart Error: {e}")
