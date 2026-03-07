@@ -565,12 +565,20 @@ def runs_view():
             try:
                 # dmg_agg_run and heal_agg_run are computed in the abilities section above.
                 if "dmg_agg_run" in locals() and not dmg_agg_run.empty:
-                    dmg_pie_df = dmg_agg_run.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"})
+                    dmg_pie_df = dmg_agg_run.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"}).copy()
+                    # Add % to legend labels - we use a specific suffix to split on in the expression if needed,
+                    # but here we'll just format the string.
+                    dmg_pie_df["Spell_Lbl"] = dmg_pie_df.apply(
+                        lambda r: f"{r['Spell']} \u00bb {r['Pct']:>4.1f}%", axis=1
+                    )
                 else:
                     dmg_pie_df = pd.DataFrame()
 
                 if "heal_agg_run" in locals() and not heal_agg_run.empty:
-                    heal_pie_df = heal_agg_run.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"})
+                    heal_pie_df = heal_agg_run.rename(columns={"spell": "Spell", "total": "Total", "pct": "Pct"}).copy()
+                    heal_pie_df["Spell_Lbl"] = heal_pie_df.apply(
+                        lambda r: f"{r['Spell']} \u00bb {r['Pct']:>4.1f}%", axis=1
+                    )
                 else:
                     heal_pie_df = pd.DataFrame()
 
@@ -584,14 +592,25 @@ def runs_view():
                                     .mark_arc(outerRadius=180)
                                     .encode(
                                         theta=alt.Theta("Total:Q"),
-                                        color=alt.Color("Spell:N", legend=alt.Legend(title="Spell")),
+                                        color=alt.Color(
+                                            "Spell_Lbl:N",
+                                            legend=alt.Legend(
+                                                title="Spell",
+                                                orient="right",
+                                                labelLimit=400,
+                                                labelFont="monospace",
+                                                labelFontSize=12,
+                                                labelColor="#CCCCCC",
+                                            ),
+                                            sort=alt.SortField("Total", order="descending"),
+                                        ),
                                         tooltip=[
                                             alt.Tooltip("Spell:N"),
                                             alt.Tooltip("Total:Q", format=",", title="Total"),
                                             alt.Tooltip("Pct:Q", format=".1f", title="%"),
                                         ],
                                     )
-                                    .properties(title="Damage by ability (this run)", height=520),
+                                    .properties(title="Damage by ability (this run)", height=560),
                                     width="stretch",
                                 )
                             except Exception:
@@ -604,14 +623,25 @@ def runs_view():
                                     .mark_arc(outerRadius=180)
                                     .encode(
                                         theta=alt.Theta("Total:Q"),
-                                        color=alt.Color("Spell:N", legend=alt.Legend(title="Spell")),
+                                        color=alt.Color(
+                                            "Spell_Lbl:N",
+                                            legend=alt.Legend(
+                                                title="Spell",
+                                                orient="right",
+                                                labelLimit=400,
+                                                labelFont="monospace",
+                                                labelFontSize=11,
+                                                labelColor="#CCCCCC",
+                                            ),
+                                            sort=alt.SortField("Total", order="descending"),
+                                        ),
                                         tooltip=[
                                             alt.Tooltip("Spell:N"),
                                             alt.Tooltip("Total:Q", format=",", title="Total"),
                                             alt.Tooltip("Pct:Q", format=".1f", title="%"),
                                         ],
                                     )
-                                    .properties(title="Healing by ability (this run)", height=520),
+                                    .properties(title="Healing by ability (this run)", height=560),
                                     width="stretch",
                                 )
                             except Exception:
