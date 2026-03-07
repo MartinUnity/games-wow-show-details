@@ -2,15 +2,17 @@ import argparse
 import bisect
 import csv
 import glob
+import gzip
 import json
 import os
+import shutil
 import time
 from datetime import datetime
 
-# --- CONFIGURATION ---
-LOG_DIR = "/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
-OUTPUT_CSV = "parsed_combat_data.csv"
-BOSS_KILLS_PATH = "boss_kills.jsonl"
+from config import BOSS_KILLS_PATH, CSV_BACKUP_DIR, CSV_PATH, DATA_DIR, LOG_DIR, MAX_CSV_BACKUPS
+
+# Alias kept so existing references inside this file don't need touching.
+OUTPUT_CSV = CSV_PATH
 
 
 def get_latest_log_file(directory):
@@ -574,6 +576,25 @@ def assign_encounter_id(event_dt, encounters):
     return assign_encounter_info(event_dt, encounters)[0]
 
 
+def _log_sort_key(path: str):
+    """Return a datetime from the filename (WoWCombatLog-MMDDYY_HHMMSS.txt[.gz])
+    so that both plain and compressed logs sort in true chronological order."""
+    name = os.path.basename(path)
+    name = name.replace(".txt.gz", "").replace(".txt", "")
+    try:
+        date_part = name.split("-", 1)[1]  # MMDDYY_HHMMSS
+        return datetime.strptime(date_part, "%m%d%y_%H%M%S")
+    except Exception:
+        return datetime.min
+
+
+def _open_log(path: str):
+    """Return an open text-mode file handle for a plain or gzip-compressed log."""
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8")
+    return open(path, "r", encoding="utf-8")
+
+
 def export_csv(filepath, csv_path=OUTPUT_CSV):
     """Scan the log file and write parsed player events to a CSV file."""
     print(f"Exporting parsed events to CSV: {csv_path}")
@@ -637,17 +658,59 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
     _write_boss_kills(boss_kills)
 
 
-def _backup_file(path):
-    """Rename existing file to a .bak with timestamp to avoid data loss."""
+def _backup_file(path, backup_dir=CSV_BACKUP_DIR, keep=MAX_CSV_BACKUPS):
+    """Copy existing file into *backup_dir* with a timestamped name, then
+    prune the oldest backups so at most *keep* copies are retained."""
     if not os.path.exists(path):
         return
+    os.makedirs(backup_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    bak = f"{path}.bak.{ts}"
+    bak_name = os.path.basename(path) + f".bak.{ts}"
+    bak = os.path.join(backup_dir, bak_name)
     try:
-        os.rename(path, bak)
-        print(f"Backed up existing '{path}' to '{bak}'")
+        shutil.copy2(path, bak)
+        print(f"Backed up '{os.path.basename(path)}' → {backup_dir}/{bak_name}")
     except Exception as e:
         print(f"Warning: failed to backup {path}: {e}")
+        return
+    # Prune oldest backups in the backup dir beyond the keep limit.
+    baks = sorted(glob.glob(os.path.join(backup_dir, os.path.basename(path) + ".bak.*")))
+    while len(baks) > keep:
+        oldest = baks.pop(0)
+        try:
+            os.remove(oldest)
+            print(f"  Pruned old backup: {os.path.basename(oldest)}")
+        except Exception:
+            pass
+
+
+def archive_old_logs(log_dir=LOG_DIR, data_dir=DATA_DIR):
+    """Compress and move all but the newest WoWCombatLog-*.txt from *log_dir*
+    into *data_dir* as .txt.gz files.  Safe to call at any time — calling it
+    while the game is running will leave the active (newest) log in place."""
+    pattern = os.path.join(log_dir, "WoWCombatLog-*.txt")
+    files = sorted(glob.glob(pattern), key=os.path.getmtime)
+    if len(files) <= 1:
+        return  # zero or one file — nothing to archive
+    to_archive = files[:-1]  # everything except the newest (active) log
+    os.makedirs(data_dir, exist_ok=True)
+    for src in to_archive:
+        dest = os.path.join(data_dir, os.path.basename(src) + ".gz")
+        if os.path.exists(dest):
+            # Already safely archived; just remove the uncompressed original.
+            try:
+                os.remove(src)
+                print(f"  Archive: removed duplicate {os.path.basename(src)}")
+            except Exception as e:
+                print(f"  Archive: could not remove {src}: {e}")
+            continue
+        try:
+            with open(src, "rb") as f_in, gzip.open(dest, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            os.remove(src)
+            print(f"  Archive: compressed {os.path.basename(src)} → {data_dir}")
+        except Exception as e:
+            print(f"  Archive: failed to compress {src}: {e}")
 
 
 def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
@@ -675,7 +738,7 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
     def _all_lines():
         for fp in filepaths:
             try:
-                with open(fp, "r", encoding="utf-8") as fh:
+                with _open_log(fp) as fh:
                     yield from fh
             except Exception:
                 continue
@@ -691,7 +754,7 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
         current_char_name = None
         for fp in filepaths:
             try:
-                with open(fp, "r", encoding="utf-8") as infile:
+                with _open_log(fp) as infile:
                     for line in infile:
                         parsed_data, current_char_name = parse_combat_line(line.strip(), current_char_name)
                         if not parsed_data:
@@ -772,6 +835,9 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
     # Continue combat_id numbering from what is already in the CSV.
     combat_id = _read_max_combat_id(csv_path)
     print(f"Tail mode started.  Resuming from combat_id={combat_id}.  Ctrl-C to stop.")
+
+    # Archive old log files on startup (compress all but the active log).
+    archive_old_logs()
 
     # ── Incremental encounter state (mirrors detect_encounters internals) ──
     active_enemies: dict = {}  # guid -> last_seen_dt
@@ -872,6 +938,8 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                     log_path = latest
                     log_fh = open(log_path, "r", encoding="utf-8")
                     log_fh.seek(0, 2)
+                    # Compress the logs that are no longer active.
+                    archive_old_logs()
 
             new_lines = log_fh.readlines()
 
@@ -1017,13 +1085,23 @@ if __name__ == "__main__":
 
     # If full import requested, scan all logs, backup CSV, and rewrite it.
     if args.full_import:
-        # find all logs in the directory sorted by modification time (oldest first)
-        pattern = os.path.join(LOG_DIR, "WoWCombatLog-*.txt")
-        files = glob.glob(pattern)
-        if not files:
+        # First, move old uncompressed logs to DATA_DIR and compress them.
+        print("Archiving old log files...")
+        archive_old_logs()
+
+        # Collect all files: compressed archives in DATA_DIR + any remaining
+        # plain .txt files in LOG_DIR (at minimum the active/latest log).
+        archived = glob.glob(os.path.join(DATA_DIR, "WoWCombatLog-*.txt.gz"))
+        live = glob.glob(os.path.join(LOG_DIR, "WoWCombatLog-*.txt"))
+        all_files = archived + live
+
+        if not all_files:
             print("No WoWCombatLog files found for full import.")
             exit(1)
-        files_sorted = sorted(files, key=os.path.getmtime)
+
+        # Sort by the timestamp encoded in the filename for true chronological order.
+        files_sorted = sorted(all_files, key=_log_sort_key)
+        print(f"Full import: {len(files_sorted)} file(s) ({len(archived)} compressed, {len(live)} live).")
         # backup existing CSV
         _backup_file(OUTPUT_CSV)
         export_csv_from_files(files_sorted, csv_path=OUTPUT_CSV)

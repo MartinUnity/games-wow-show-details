@@ -11,12 +11,18 @@ import os
 import pandas as pd
 import streamlit as st
 
-# ── Path constants (single source of truth) ──────────────────────────────────
-CSV_PATH = "parsed_combat_data.csv"
-NOTES_PATH = "encounter_notes.jsonl"
-HIDDEN_PATH = "hidden_combats.json"
-BOSS_KILLS_PATH = "boss_kills.jsonl"
-LOG_DIR = "/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
+from config import (  # noqa: F401 – re-exported for backward-compat imports
+    BOSS_KILLS_PATH,
+    CSV_PATH,
+    DATA_DIR,
+    DEFAULT_NUM_COMBATS,
+    DEFAULT_TOP_N_ABILITIES,
+    HIDDEN_PATH,
+    LOG_DIR,
+    MAX_CSV_BACKUPS,
+    MIN_SOURCE_COMBATS,
+    NOTES_PATH,
+)
 
 
 # ── Log file helpers ─────────────────────────────────────────────────────────

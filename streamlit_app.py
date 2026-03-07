@@ -22,6 +22,9 @@ from utils.data_engine import (
 # ── Imports from the modular packages ────────────────────────────────────────
 from utils.data_io import (
     CSV_PATH,
+    DEFAULT_NUM_COMBATS,
+    DEFAULT_TOP_N_ABILITIES,
+    MIN_SOURCE_COMBATS,
     _fmt_compact_amount,
     compute_character_counts,
     load_csv,
@@ -79,7 +82,6 @@ def main():
     # Chart controls: resample and smoothing (seconds)
     resample_s = st.sidebar.selectbox("Resample interval (s)", options=[1, 2, 3, 5], index=1)
     smooth_s = st.sidebar.selectbox("Smoothing window (s, 0=off)", options=[0, 2, 3, 5, 10], index=2)
-    show_replay = st.sidebar.checkbox("Enable 2D Replay", value=False, help="Requires Advanced Combat Logging logs.")
     view = st.sidebar.radio(
         "View", options=["Combat Viewer", "Runs", "All Encounters", "Totals", "Character Comparison"], index=0
     )
@@ -107,7 +109,6 @@ def main():
         player_like = sorted([n for n in raw_names if is_player_like(n)])
         others = sorted([n for n in raw_names if not is_player_like(n)])
         include_non_player = st.sidebar.checkbox("Include non-player sources", value=False)
-        min_source_combats = st.sidebar.slider("Min combats to show (sources)", min_value=1, max_value=10, value=3)
         try:
             counts_df = compute_character_counts()
             counts_map = dict(zip(counts_df["source"], counts_df["combats"]))
@@ -115,7 +116,7 @@ def main():
             counts_map = {}
 
         if include_non_player:
-            others_filtered = [n for n in others if counts_map.get(n, 0) >= min_source_combats]
+            others_filtered = [n for n in others if counts_map.get(n, 0) >= MIN_SOURCE_COMBATS]
             options = ["All"] + player_like + others_filtered
         else:
             options = ["All"] + player_like
@@ -398,50 +399,6 @@ def main():
     else:
         combat_to_show = selected_cid
 
-    # Compute available abilities for this combat so the slider can be dynamic
-    combat_df_preview = df[df["combat_id"] == combat_to_show]
-    dmg_agg_preview = spell_aggregates(combat_df_preview, "damage", top_n=1000)
-    heal_agg_preview = spell_aggregates(combat_df_preview, "heal", top_n=1000)
-    max_abilities = max(len(dmg_agg_preview), len(heal_agg_preview))
-
-    if max_abilities <= 1:
-        st.sidebar.markdown(f"**Abilities to show:** {max_abilities if max_abilities>0 else 0}")
-        top_n = max(1, max_abilities)
-    else:
-        min_val = 1
-        max_val = max_abilities + 1
-        if "abilities_n" not in st.session_state:
-            st.session_state["abilities_n"] = min(7, max_val)
-        top_n = st.sidebar.slider(
-            "Abilities to show",
-            min_value=min_val,
-            max_value=max_val,
-            value=st.session_state["abilities_n"],
-            key="abilities_n",
-        )
-
-    # Show-last-N-combats slider
-    try:
-        max_combats = int(df["combat_id"].max()) if "combat_id" in df.columns else 1
-    except Exception:
-        max_combats = 1
-    if max_combats < 1:
-        max_combats = 1
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**Combats to display (filtered by Character)**")
-    _nc_options = [10, 25, 50, 100, 250, "All"]
-    _nc_default = min(25, max_combats)
-    if "num_combats" not in st.session_state:
-        st.session_state["num_combats"] = _nc_default
-    _nc_select = st.sidebar.selectbox(
-        "Show last N combats",
-        options=_nc_options,
-        index=_nc_options.index(25) if 25 in _nc_options else 0,
-        key="num_combats_select",
-    )
-    num_combats_val = max_combats if _nc_select == "All" else int(_nc_select)
-    st.session_state["num_combats"] = num_combats_val
-
     # Hidden encounters management
     _hidden = load_hidden()
     if _hidden:
@@ -455,16 +412,24 @@ def main():
     # Render summary (left) and combat details (right) in a 1:3 split
     col_left, col_right = st.columns([1, 3])
     with col_left:
-        sel_override = summary_view(df, num_combats=st.session_state.get("num_combats", 25))
+        sel_override = summary_view(df, num_combats=DEFAULT_NUM_COMBATS)
 
     with col_right:
         if sel_override:
             combat_detail_view(
-                df, sel_override, resample_s=resample_s, smooth_s=smooth_s, top_n=top_n, show_replay=show_replay
+                df,
+                sel_override,
+                resample_s=resample_s,
+                smooth_s=smooth_s,
+                top_n=DEFAULT_TOP_N_ABILITIES,
             )
         else:
             combat_detail_view(
-                df, combat_to_show, resample_s=resample_s, smooth_s=smooth_s, top_n=top_n, show_replay=show_replay
+                df,
+                combat_to_show,
+                resample_s=resample_s,
+                smooth_s=smooth_s,
+                top_n=DEFAULT_TOP_N_ABILITIES,
             )
 
 

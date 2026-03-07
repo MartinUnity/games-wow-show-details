@@ -25,7 +25,7 @@ from utils.export_share import register_share_ui
 from utils.replay_engine import generate_replay_manuscript, render_replay_viewer
 
 
-def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5, show_replay=False):
+def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
     # Show combat header with first target name if available
     combat_df = df[df["combat_id"] == combat_id].sort_values("timestamp_dt")
 
@@ -313,7 +313,13 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5, show_re
 
     # Share / Export (CSV + optional GIF replay)
     try:
-        register_share_ui(combat_df, combat_id)
+        col_replay, col_share = st.columns([1, 1])
+        with col_replay:
+            show_replay = st.checkbox(
+                "Enable 2D Replay", value=False, help="Requires Advanced Combat Logging logs.", key=f"replay_{combat_id}"
+            )
+        with col_share:
+            register_share_ui(combat_df, combat_id)
     except Exception:
         pass
 
