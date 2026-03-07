@@ -66,6 +66,65 @@ def parse_combat_line(line, current_char_name):
     if is_active_player and current_char_name is None:
         current_char_name = source_name
 
+    # ── SPELL_ABSORBED special case ──────────────────────────────────────────
+    # src/dst fields describe attacker→defender (enemy→player), so is_mine on
+    # src will always be False.  The shield *caster* sits deeper in the row.
+    #
+    # Two variants exist (distinguished by whether field[8] is a GUID or a
+    # numeric spell ID):
+    #
+    #   Melee/auto variant (18 fields):
+    #     [0..7] = std src/dst block
+    #     [8]  casterGUID  [9] casterName  [10] casterFlags  [11] casterFlags2
+    #     [12] shieldSpellID  [13] "shieldName"  [14] school
+    #     [15] amount  [16] remaining  [17] nil
+    #
+    #   Spell-attack variant (21 fields):
+    #     [0..7] = std src/dst block
+    #     [8]  attackSpellID  [9] "attackSpellName"  [10] school
+    #     [11] casterGUID  [12] casterName  [13] casterFlags  [14] casterFlags2
+    #     [15] shieldSpellID  [16] "shieldName"  [17] school
+    #     [18] amount  [19] remaining  [20] nil
+    if event_type == "SPELL_ABSORBED" and len(rest_parts) >= 18:
+        def _safe_int(v):
+            try:
+                return int(v)
+            except Exception:
+                return 0
+
+        if rest_parts[8][0].isdigit():
+            # Spell-attack variant
+            if len(rest_parts) < 21:
+                return None, current_char_name
+            caster_name   = rest_parts[12].replace('"', "")
+            caster_flags  = _parse_flags(rest_parts[13])
+            shield_name   = rest_parts[16].replace('"', "")
+            amount        = _safe_int(rest_parts[18])
+        else:
+            # Melee/auto variant
+            caster_name   = rest_parts[9].replace('"', "")
+            caster_flags  = _parse_flags(rest_parts[10])
+            shield_name   = rest_parts[13].replace('"', "")
+            amount        = _safe_int(rest_parts[15])
+
+        if not bool(caster_flags & 0x1):
+            return None, current_char_name
+
+        if (caster_flags & 0x401) == 0x401 and current_char_name is None:
+            current_char_name = caster_name
+
+        target_name = rest_parts[5].replace('"', "") if len(rest_parts) > 5 else ""
+        return {
+            "timestamp":        timestamp_str,
+            "event":            event_type,
+            "source":           caster_name,
+            "target":           target_name,
+            "spell_name":       shield_name,
+            "amount":           amount,
+            "effective_amount": amount,
+            "type":             "absorb",
+        }, current_char_name
+
     # Only interested in actions performed by the player (or their pet/totem).
     if not is_mine:
         return None, current_char_name
@@ -162,7 +221,7 @@ def run_test_mode(filepath, debug=False):
             # Aggregation
             if parsed_data["type"] == "damage":
                 total_damage += parsed_data["effective_amount"]
-            elif parsed_data["type"] == "heal":
+            elif parsed_data["type"] in ("heal", "absorb"):
                 total_healing += parsed_data["effective_amount"]
 
     if debug:

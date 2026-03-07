@@ -22,7 +22,7 @@ def combat_time_series(combat_df, resample_s=1, spell_filter=None):
 
     ts = combat_df.set_index("timestamp_dt").sort_index()
     dmg = ts[ts["type"] == "damage"]["effective_amount"].resample(f"{resample_s}s").sum()
-    heal = ts[ts["type"] == "heal"]["effective_amount"].resample(f"{resample_s}s").sum()
+    heal = ts[ts["type"].isin(["heal", "absorb"])]["effective_amount"].resample(f"{resample_s}s").sum()
     df_ts = pd.DataFrame({"DPS": dmg, "HPS": heal}).fillna(0)
 
     # If a spell filter is provided, compute per-spell series and attach
@@ -46,7 +46,7 @@ def combat_time_series(combat_df, resample_s=1, spell_filter=None):
                 df_ts["Selected_HPS"] = 0
             elif kind == "healing":
                 sel_h = (
-                    ts[(ts["spell_name"] == spell_name) & (ts["type"] == "heal")]["effective_amount"]
+                    ts[(ts["spell_name"] == spell_name) & (ts["type"].isin(["heal", "absorb"]))]["effective_amount"]
                     .resample(f"{resample_s}s")
                     .sum()
                 )
@@ -59,7 +59,7 @@ def combat_time_series(combat_df, resample_s=1, spell_filter=None):
                     .sum()
                 )
                 sel_h = (
-                    ts[(ts["spell_name"] == spell_name) & (ts["type"] == "heal")]["effective_amount"]
+                    ts[(ts["spell_name"] == spell_name) & (ts["type"].isin(["heal", "absorb"]))]["effective_amount"]
                     .resample(f"{resample_s}s")
                     .sum()
                 )
@@ -76,10 +76,18 @@ def combat_time_series(combat_df, resample_s=1, spell_filter=None):
 
 
 def spell_aggregates(combat_df, event_type, top_n=10):
-    """Return a DataFrame with per-spell aggregates: count, total, avg, pct."""
+    """Return a DataFrame with per-spell aggregates: count, total, avg, pct.
+
+    *event_type* may be a single string (e.g. ``"damage"``) or a list of
+    strings (e.g. ``["heal", "absorb"]``) to aggregate multiple types together.
+    When a list is passed a ``kind`` column is included showing the dominant
+    type for each spell (useful for colour-coding in charts).
+    """
     if combat_df.empty:
         return pd.DataFrame()
-    df = combat_df[combat_df["type"] == event_type]
+    multi = not isinstance(event_type, str)
+    types = list(event_type) if multi else [event_type]
+    df = combat_df[combat_df["type"].isin(types)]
     if df.empty:
         return pd.DataFrame()
     agg = (
@@ -91,6 +99,20 @@ def spell_aggregates(combat_df, event_type, top_n=10):
     total_all = agg["total"].sum()
     agg["pct"] = agg["total"] / total_all * 100
     agg = agg.reset_index().rename(columns={"spell_name": "spell"})
+    if multi:
+        # Dominant type per spell (highest total wins — in practice each spell
+        # is always one type, so this is deterministic).
+        kind_map = (
+            df.groupby(["spell_name", "type"])["effective_amount"]
+            .sum()
+            .reset_index()
+            .sort_values("effective_amount", ascending=False)
+            .drop_duplicates(subset="spell_name")
+            .rename(columns={"spell_name": "spell", "type": "kind"})
+            .set_index("spell")["kind"]
+        )
+        agg["kind"] = agg["spell"].map(kind_map).fillna(types[0])
+        return agg[["spell", "kind", "count", "total", "avg", "pct"]].head(top_n)
     return agg[["spell", "count", "total", "avg", "pct"]].head(top_n)
 
 
@@ -141,7 +163,7 @@ def compute_totals_summary(path=CSV_PATH, character=None):
                 spans.append((e - s).total_seconds())
         total_time = sum(spans)
         total_damage = float(sub[sub["type"] == "damage"]["effective_amount"].sum())
-        total_heal = float(sub[sub["type"] == "heal"]["effective_amount"].sum())
+        total_heal = float(sub[sub["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
         dps = total_damage / total_time if total_time > 0 else 0.0
         hps = total_heal / total_time if total_time > 0 else 0.0
         target_rows.append(
@@ -198,13 +220,15 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
     enc_times = df.groupby("combat_id")["timestamp_dt"].agg(["min", "max"])
     enc_times["duration_s"] = (enc_times["max"] - enc_times["min"]).dt.total_seconds().clip(lower=0)
     dmg_per_enc = df[df["type"] == "damage"].groupby("combat_id")["effective_amount"].sum().rename("total_damage")
-    heal_per_enc = df[df["type"] == "heal"].groupby("combat_id")["effective_amount"].sum().rename("total_heal")
+    heal_per_enc = (
+        df[df["type"].isin(["heal", "absorb"])].groupby("combat_id")["effective_amount"].sum().rename("total_heal")
+    )
     enc_df = enc_times.join(dmg_per_enc).join(heal_per_enc).fillna(0).reset_index()
     enc_df["dps"] = enc_df.apply(lambda r: r["total_damage"] / r["duration_s"] if r["duration_s"] > 0 else 0, axis=1)
     enc_df["hps"] = enc_df.apply(lambda r: r["total_heal"] / r["duration_s"] if r["duration_s"] > 0 else 0, axis=1)
 
     total_damage = float(df[df["type"] == "damage"]["effective_amount"].sum())
-    total_heal = float(df[df["type"] == "heal"]["effective_amount"].sum())
+    total_heal = float(df[df["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
     total_duration = float(enc_times["duration_s"].sum())
     n_encounters = int(enc_times.shape[0])
 
@@ -218,7 +242,8 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
     }
 
     def _spell_agg(event_type, top_n=40):
-        d = df[df["type"] == event_type]
+        types = [event_type] if isinstance(event_type, str) else list(event_type)
+        d = df[df["type"].isin(types)]
         if d.empty:
             return pd.DataFrame()
         agg = (
@@ -268,7 +293,7 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
     else:
         top_targets = pd.DataFrame()
 
-    return meta, enc_df, _spell_agg("damage"), _spell_agg("heal"), top_targets
+    return meta, enc_df, _spell_agg("damage"), _spell_agg(["heal", "absorb"]), top_targets
 
 
 # ── 5. Run grouper (zone + time-gap clustering with boss-kill join) ───────────
@@ -315,7 +340,12 @@ def compute_runs(path=CSV_PATH, gap_minutes=20):
     )
     enc_times["duration_s"] = (enc_times["end_dt"] - enc_times["start_dt"]).dt.total_seconds().clip(lower=0)
     enc_dmg = enc_df[enc_df["type"] == "damage"].groupby("combat_id")["effective_amount"].sum().rename("total_damage")
-    enc_heal = enc_df[enc_df["type"] == "heal"].groupby("combat_id")["effective_amount"].sum().rename("total_heal")
+    enc_heal = (
+        enc_df[enc_df["type"].isin(["heal", "absorb"])]
+        .groupby("combat_id")["effective_amount"]
+        .sum()
+        .rename("total_heal")
+    )
     # Zone per encounter — most frequent value in that combat
     enc_zone = enc_df.groupby("combat_id")["zone_name"].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else "")
     enc_zone_id = enc_df.groupby("combat_id")["zone_id"].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else 0)

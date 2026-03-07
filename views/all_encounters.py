@@ -237,19 +237,35 @@ def all_encounters_view(df_full, character=None):
         st.markdown("**Healing by ability**")
         if not heal_spells.empty:
             ha = heal_spells.reset_index(drop=True)
-            styled_h = ha.style.format({"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}).apply(
+            ha_display = ha.copy()
+            if "kind" in ha_display.columns:
+                ha_display["Kind"] = (
+                    ha_display["kind"].map({"heal": "Heal", "absorb": "Absorb"}).fillna(ha_display["kind"])
+                )
+                ha_display = ha_display.drop(columns=["kind"])
+            styled_h = ha_display.style.format({"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}).apply(
                 lambda row: [("background-color: #2f2f2f" if row.name % 2 == 0 else "color: #ffffff") for _ in row],
                 axis=1,
             )
             st.dataframe(styled_h, height=TABLE_HEIGHT)
             try:
                 _lw_h = max(100, min(400, max((len(s) for s in ha["spell"]), default=10) * 7))
+                _color_enc = (
+                    alt.Color(
+                        "kind:N",
+                        scale=alt.Scale(domain=["heal", "absorb"], range=["#4CAF50", "#42A5F5"]),
+                        legend=alt.Legend(title="Kind"),
+                    )
+                    if "kind" in ha.columns
+                    else alt.value("#00CED1")
+                )
                 st.altair_chart(
                     alt.Chart(ha)
-                    .mark_bar(color="#00CED1")
+                    .mark_bar()
                     .encode(
                         x=alt.X("total:Q", title="Total Healing"),
                         y=alt.Y("spell:N", sort="-x", title="", axis=alt.Axis(labelLimit=_lw_h, labelFontSize=10)),
+                        color=_color_enc,
                         tooltip=[
                             "spell",
                             alt.Tooltip("total:Q", format=","),
@@ -270,7 +286,10 @@ def all_encounters_view(df_full, character=None):
     if not dmg_spells.empty:
         all_spells.append(dmg_spells.assign(type="damage"))
     if not heal_spells.empty:
-        all_spells.append(heal_spells.assign(type="heal"))
+        # Use the kind column (heal/absorb) if available, otherwise fall back to "heal".
+        _hs = heal_spells.copy()
+        _hs["type"] = _hs["kind"] if "kind" in _hs.columns else "heal"
+        all_spells.append(_hs)
     if all_spells:
         combined = pd.concat(all_spells).sort_values("count", ascending=False).head(25).reset_index(drop=True)
         st.subheader("Most-cast abilities (by use count)")
@@ -283,7 +302,10 @@ def all_encounters_view(df_full, character=None):
                     y=alt.Y("spell:N", sort="-x", title=""),
                     color=alt.Color(
                         "type:N",
-                        scale=alt.Scale(domain=["damage", "heal"], range=["#7CFC00", "#00CED1"]),
+                        scale=alt.Scale(
+                            domain=["damage", "heal", "absorb"],
+                            range=["#7CFC00", "#4CAF50", "#42A5F5"],
+                        ),
                         legend=alt.Legend(title="Type"),
                     ),
                     tooltip=[

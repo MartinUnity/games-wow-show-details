@@ -341,7 +341,7 @@ def runs_view():
                 participants = []
                 for src, grp in _run_df.groupby("source"):
                     total_dmg = float(grp[grp["type"] == "damage"]["effective_amount"].sum())
-                    total_heal = float(grp[grp["type"] == "heal"]["effective_amount"].sum())
+                    total_heal = float(grp[grp["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
                     if total_dmg == 0 and total_heal == 0:
                         continue
                     # Active time = sum of encounter durations this source appears in
@@ -484,7 +484,7 @@ def runs_view():
                                 _dur = _enc_dur.get(_cid, 0)
                                 for _src, _sgrp in _enc_slice.groupby("source"):
                                     _sd = float(_sgrp[_sgrp["type"] == "damage"]["effective_amount"].sum())
-                                    _sh = float(_sgrp[_sgrp["type"] == "heal"]["effective_amount"].sum())
+                                    _sh = float(_sgrp[_sgrp["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
                                     if _sd == 0 and _sh == 0:
                                         continue
                                     _role, _short = _classify(_src)
@@ -566,7 +566,7 @@ def runs_view():
                 _raw_df = load_csv()
                 _run_df = _raw_df[_raw_df["combat_id"].isin(_run_cids)].copy()
                 dmg_agg_run = spell_aggregates(_run_df, "damage", top_n=200)
-                heal_agg_run = spell_aggregates(_run_df, "heal", top_n=200)
+                heal_agg_run = spell_aggregates(_run_df, ["heal", "absorb"], top_n=200)
                 st.subheader("Abilities in this run")
                 ad, ah = st.columns(2)
                 with ad:
