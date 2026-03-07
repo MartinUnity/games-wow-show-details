@@ -58,13 +58,35 @@ def main():
         unsafe_allow_html=True,
     )
 
+    # --- View selector (top of sidebar) ---
+    view = st.sidebar.radio(
+        "View", options=["Combat Viewer", "Runs", "All Encounters", "Totals", "Character Comparison"], index=0
+    )
+
     # --- Live-follow controls (top of sidebar) ---
-    follow_live = st.sidebar.checkbox("Follow live", value=True, key="follow_live")
+    # Disable the follow checkbox when not on Combat Viewer; auto-enable when on Combat Viewer
+    if "follow_live" not in st.session_state:
+        st.session_state["follow_live"] = True
+
+    if view != "Combat Viewer":
+        # turn off follow when navigating away and disable the control
+        st.session_state["follow_live"] = False
+        follow_disabled = True
+    else:
+        # enable follow when on the combat viewer
+        st.session_state["follow_live"] = True
+        follow_disabled = False
+
+    follow_live = st.sidebar.checkbox(
+        "Follow live", value=st.session_state.get("follow_live", True), key="follow_live", disabled=follow_disabled
+    )
     if follow_live:
         st_autorefresh(interval=3000, key="live_autorefresh")  # rerun every 3 s
 
     if st.sidebar.button("Show Latest", help="Reset selection to the most recent encounter."):
         st.session_state["combat_select"] = 0
+        # clicking Show Latest should re-enable follow live
+        st.session_state["follow_live"] = True
         st.rerun()
 
     # CSV age indicator
@@ -82,9 +104,6 @@ def main():
     # Chart controls: resample and smoothing (seconds)
     resample_s = st.sidebar.selectbox("Resample interval (s)", options=[1, 2, 3, 5], index=1)
     smooth_s = st.sidebar.selectbox("Smoothing window (s, 0=off)", options=[0, 2, 3, 5, 10], index=2)
-    view = st.sidebar.radio(
-        "View", options=["Combat Viewer", "Runs", "All Encounters", "Totals", "Character Comparison"], index=0
-    )
 
     # Load CSV to populate character selector
     df_chars = load_csv()
