@@ -279,17 +279,48 @@ def runs_view():
             )
             rc4.metric("Avg DPS", f"{rm['avg_dps']:.1f}")
 
+            # ── Cross-reference boss kills for these encounters ──────────
+            boss_kill_ids = []
+            try:
+                from utils.data_io import load_boss_kills
+
+                _kills = load_boss_kills()
+                # Use end_ts from boss_kills to match with encounter timestamps
+                # (since boss_kills.jsonl does not contain combat_id)
+                for _k in _kills:
+                    if _k.get("kill_flag") == 1:
+                        try:
+                            bk_end = pd.to_datetime(_k.get("end_ts"))
+                            # Look for an encounter in this run that ends +/- 20 seconds from this boss kill
+                            for _, er in run_encs.iterrows():
+                                enc_end = er["end_dt"]
+                                # Compare timestamps
+                                if abs((enc_end - bk_end).total_seconds()) < 20:
+                                    boss_kill_ids.append(int(er["combat_id"]))
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
             # Build encounter rows — rendered at the bottom of this detail section
             enc_rows = []
             for _, er in run_encs.iterrows():
+                _cid = int(er["combat_id"])
+                _is_boss = _cid in boss_kill_ids
+                _star = "\u2b50 " if _is_boss else ""  # Golden Star
+                # If it's a boss, we use a slightly more prominent target label
+                _target = str(er.get("main_target", "")) or "\u2014"
+                _disp_target = f"**{_star}{_target}**" if _is_boss else f"{_star}{_target}"
+
                 enc_rows.append(
                     {
-                        "#": int(er["combat_id"]),
-                        "Target": str(er.get("main_target", "")) or "—",
+                        "#": _cid,
+                        "Target": _disp_target,
                         "Start": er["start_dt"].strftime("%H:%M:%S") if pd.notna(er["start_dt"]) else "",
                         "Duration": _dur_label(er["duration_s"]),
                         "Dmg": int(er.get("total_damage", 0)),
                         "DPS": round(er["total_damage"] / er["duration_s"], 1) if er["duration_s"] > 0 else 0.0,
+                        "is_boss": _is_boss,
                     }
                 )
 
@@ -651,31 +682,89 @@ def runs_view():
 
             # ── Encounter list (at the bottom) ────────────────────────────
             st.subheader("Encounters")
-            enc_df_disp = pd.DataFrame(enc_rows)
-            st.dataframe(
-                enc_df_disp.style.format({"Dmg": "{:,}", "DPS": "{:.1f}"}),
-                hide_index=True,
-                width="stretch",
-            )
-            if len(enc_rows) > 1:
+            enc_df_full = pd.DataFrame(enc_rows)
+
+            show_bosses_only = st.checkbox("Show Bosses only", value=False)
+            if show_bosses_only:
+                enc_df_disp = enc_df_full[enc_df_full["is_boss"] == True].copy()
+            else:
+                enc_df_disp = enc_df_full.copy()
+
+            if enc_df_disp.empty:
+                st.info("No boss encounters found in this run.")
+            else:
+                # Remove helper column for display
+                cols_to_disp = [c for c in enc_df_disp.columns if c != "is_boss"]
+                st.dataframe(
+                    enc_df_disp[cols_to_disp]
+                    .style.format({"Dmg": "{:,}", "DPS": "{:.1f}"})
+                    .apply(
+                        lambda row: [
+                            (
+                                "background-color: rgba(255, 215, 0, 0.15); color: #FFD700; font-weight: bold"
+                                if enc_df_disp.loc[row.name, "is_boss"]
+                                else ""
+                            )
+                            for col in cols_to_disp
+                        ],
+                        axis=1,
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+
+            if not enc_df_full.empty and len(enc_df_full) > 0:
                 try:
-                    chart_df = pd.DataFrame(enc_rows).assign(cid_str=lambda d: d["#"].astype(str))
-                    st.altair_chart(
-                        alt.Chart(chart_df)
-                        .mark_bar(color="#7CFC00", opacity=0.85)
-                        .encode(
-                            x=alt.X("DPS:Q", title="DPS"),
-                            y=alt.Y("cid_str:N", title="Combat ID", sort=None),
-                            tooltip=[
-                                alt.Tooltip("cid_str:N", title="Combat"),
-                                "Target",
-                                alt.Tooltip("DPS:Q", format=".1f"),
-                                "Duration",
-                            ],
+                    # Natural sort order for combat IDs
+                    _cid_order = [str(c) for c in enc_df_full["#"].tolist()]
+                    # Combine ID and Target for a unique, descriptive Y axis
+                    chart_df = enc_df_full.copy()
+                    chart_df["Label"] = chart_df.apply(lambda r: f"#{r['#']} {r['Target']}".replace("**", ""), axis=1)
+                    _label_order = chart_df["Label"].tolist()
+
+                    base = alt.Chart(chart_df).encode(
+                        y=alt.Y(
+                            "Label:N",
+                            title="Encounter",
+                            sort=_label_order,
+                            axis=alt.Axis(labelLimit=300, labelExpr="datum.label"),
                         )
-                        .properties(height=len(enc_rows) * 30, title=f"DPS per encounter — {zone_label}"),
-                        width="stretch",
                     )
+
+                    bars = base.mark_bar(opacity=0.85).encode(
+                        x=alt.X("DPS:Q", title="DPS"),
+                        color=alt.condition(
+                            alt.datum.is_boss,
+                            alt.value("#FFD700"),
+                            alt.value("#7CFC00"),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("#:N", title="Combat ID"),
+                            "Target",
+                            alt.Tooltip("is_boss:N", title="Boss Kill"),
+                            alt.Tooltip("DPS:Q", format=".1f"),
+                            "Duration",
+                        ],
+                    )
+
+                    text = base.mark_text(
+                        align="right",
+                        baseline="middle",
+                        dx=-5,
+                        color="#000000",
+                        fontWeight="bold",
+                    ).encode(
+                        x=alt.X("DPS:Q"),
+                        text=alt.Text("DPS:Q", format=".1f"),
+                    )
+
+                    chart = (bars + text).properties(
+                        height=max(80, len(chart_df) * 35), title=f"DPS per encounter \u2014 {zone_label}"
+                    )
+
+                    st.altair_chart(chart, width="stretch")
+                except Exception:
+                    pass
                 except Exception:
                     pass
             st.caption("Navigate to **Combat Viewer** to inspect any individual encounter in full detail.")
