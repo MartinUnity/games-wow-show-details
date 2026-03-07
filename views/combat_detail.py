@@ -311,17 +311,18 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
     except Exception:
         pass
 
-    # Share / Export (CSV + optional GIF replay)
     try:
-        col_replay, col_share = st.columns([1, 1])
-        with col_replay:
-            show_replay = st.checkbox(
-                "Enable 2D Replay", value=False, help="Requires Advanced Combat Logging logs.", key=f"replay_{combat_id}"
-            )
-        with col_share:
-            register_share_ui(combat_df, combat_id)
+        show_replay = st.checkbox(
+            "Enable 2D Replay",
+            value=False,
+            help="Requires Advanced Combat Logging logs.",
+            key=f"replay_{combat_id}",
+        )
     except Exception:
         pass
+
+    # Share / Export (CSV + optional GIF replay)
+    register_share_ui(combat_df, combat_id)
 
     with st.expander("Recent events", expanded=False):
         st.dataframe(
