@@ -139,7 +139,19 @@ def load_healer_spells(path=HEALER_SPELLS_PATH) -> dict:
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Normalize spell ids to ints when possible
+        for spec, spells in list(data.items()):
+            if isinstance(spells, list):
+                normalized = []
+                for s in spells:
+                    try:
+                        normalized.append(int(s))
+                    except Exception:
+                        # Keep string forms (spell names) if not int-convertible
+                        normalized.append(str(s))
+                data[spec] = normalized
+        return data
     except Exception:
         return {}
 

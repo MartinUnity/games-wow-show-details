@@ -4,6 +4,12 @@
   "Restoration_Druid": [],
   "Holy_Paladin": [],
   "Preservation_Evoker": [],
-  "Holy_Priest": [],
+  "Holy_Priest": [
+    1246768,
+    1246798,
+    1945094,
+    1945099,
+    33076
+  ],
   "Discipline_Priest": []
 }
