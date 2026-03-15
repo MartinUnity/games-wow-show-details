@@ -22,6 +22,8 @@ from config import (  # noqa: F401 – re-exported for backward-compat imports
     MAX_CSV_BACKUPS,
     MIN_SOURCE_COMBATS,
     NOTES_PATH,
+    HEALER_SPELLS_PATH,
+    SIDECAR_DIR,
 )
 
 
@@ -125,6 +127,21 @@ def load_csv(path=CSV_PATH):
     if "zone_name" not in df.columns:
         df["zone_name"] = ""
     return df
+
+
+def load_healer_spells(path=HEALER_SPELLS_PATH) -> dict:
+    """Load per-specialization healer-identifying spell lists.
+
+    The file is a JSON mapping specialization -> list of spell names or ids.
+    Returns an empty dict if the file is missing or malformed.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 # ── Notes ─────────────────────────────────────────────────────────────────────

@@ -19,14 +19,19 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "log
 
 # ── Output / sidecar file paths ───────────────────────────────────────────────
 CSV_PATH = "parsed_combat_data.csv"
-BOSS_KILLS_PATH = "boss_kills.jsonl"
-NOTES_PATH = "encounter_notes.jsonl"
-HIDDEN_PATH = "hidden_combats.json"
+# Sidecar directory under repo data/sidecar — convenience paths for services and UIs
+SIDECAR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sidecar")
+BOSS_KILLS_PATH = os.path.join(SIDECAR_DIR, "boss_kills.jsonl")
+NOTES_PATH = os.path.join(SIDECAR_DIR, "encounter_notes.jsonl")
+HIDDEN_PATH = os.path.join(SIDECAR_DIR, "hidden_combats.json")
+HEALER_SPELLS_PATH = os.path.join(SIDECAR_DIR, "healer_spells.json")
 
 # ── CSV backup directory ─────────────────────────────────────────────────────
 # Timestamped backups of parsed_combat_data.csv are stored here instead of
 # cluttering the repo root.
-CSV_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "csv-backups")
+CSV_BACKUP_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data", "csv-backups"
+)
 
 # ── Log archive settings ──────────────────────────────────────────────────────
 # How many parsed_combat_data.csv.bak.* files to keep before pruning.
