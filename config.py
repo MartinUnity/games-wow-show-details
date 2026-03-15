@@ -10,11 +10,25 @@ import os
 # ── WoW combat log source directory ──────────────────────────────────────────
 # Allow overriding the local WoW Logs path via the environment for privacy and
 # portability. If not set, fall back to the previous developer-local default.
+_DEFAULT_HOME = os.path.expanduser("~")
+# Construct a sensible Linux default under $HOME but allow full override via
+# the WOW_LOG_DIR environment variable (useful on Windows or non-standard setups).
 LOG_DIR = os.environ.get(
     "WOW_LOG_DIR",
-    (
-        "/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx"
-        "/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
+    os.path.join(
+        _DEFAULT_HOME,
+        ".local",
+        "share",
+        "Steam",
+        "steamapps",
+        "compatdata",
+        "4076040504",
+        "pfx",
+        "drive_c",
+        "Program Files (x86)",
+        "World of Warcraft",
+        "_retail_",
+        "Logs",
     ),
 )
 
