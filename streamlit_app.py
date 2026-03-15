@@ -60,7 +60,15 @@ def main():
 
     # --- View selector (top of sidebar) ---
     view = st.sidebar.radio(
-        "View", options=["Combat Viewer", "Runs", "All Encounters", "Totals", "Character Comparison"], index=0
+        "View",
+        options=[
+            "Combat Viewer",
+            "Runs",
+            "All Encounters",
+            "Totals",
+            "Character Comparison",
+        ],
+        index=0,
     )
 
     # --- Live-follow controls (top of sidebar) ---
@@ -78,12 +86,17 @@ def main():
         follow_disabled = False
 
     follow_live = st.sidebar.checkbox(
-        "Follow live", value=st.session_state.get("follow_live", True), key="follow_live", disabled=follow_disabled
+        "Follow live",
+        value=st.session_state.get("follow_live", True),
+        key="follow_live",
+        disabled=follow_disabled,
     )
     if follow_live:
         st_autorefresh(interval=3000, key="live_autorefresh")  # rerun every 3 s
 
-    if st.sidebar.button("Show Latest", help="Reset selection to the most recent encounter."):
+    if st.sidebar.button(
+        "Show Latest", help="Reset selection to the most recent encounter."
+    ):
         st.session_state["combat_select"] = 0
         # clicking Show Latest should re-enable follow live
         st.session_state["follow_live"] = True
@@ -102,8 +115,12 @@ def main():
     st.sidebar.markdown("---")
 
     # Chart controls: resample and smoothing (seconds)
-    resample_s = st.sidebar.selectbox("Resample interval (s)", options=[1, 2, 3, 5], index=1)
-    smooth_s = st.sidebar.selectbox("Smoothing window (s, 0=off)", options=[0, 2, 3, 5, 10], index=2)
+    resample_s = st.sidebar.selectbox(
+        "Resample interval (s)", options=[1, 2, 3, 5], index=1
+    )
+    smooth_s = st.sidebar.selectbox(
+        "Smoothing window (s, 0=off)", options=[0, 2, 3, 5, 10], index=2
+    )
 
     # Load CSV to populate character selector
     df_chars = load_csv()
@@ -115,7 +132,11 @@ def main():
                 break
 
     if char_col:
-        raw_names = [n for n in df_chars[char_col].dropna().unique() if n and str(n).strip() != ""]
+        raw_names = [
+            n
+            for n in df_chars[char_col].dropna().unique()
+            if n and str(n).strip() != ""
+        ]
 
         def is_player_like(n: str) -> bool:
             try:
@@ -127,7 +148,9 @@ def main():
 
         player_like = sorted([n for n in raw_names if is_player_like(n)])
         others = sorted([n for n in raw_names if not is_player_like(n)])
-        include_non_player = st.sidebar.checkbox("Include non-player sources", value=False)
+        include_non_player = st.sidebar.checkbox(
+            "Include non-player sources", value=False
+        )
         try:
             counts_df = compute_character_counts()
             counts_map = dict(zip(counts_df["source"], counts_df["combats"]))
@@ -135,7 +158,9 @@ def main():
             counts_map = {}
 
         if include_non_player:
-            others_filtered = [n for n in others if counts_map.get(n, 0) >= MIN_SOURCE_COMBATS]
+            others_filtered = [
+                n for n in others if counts_map.get(n, 0) >= MIN_SOURCE_COMBATS
+            ]
             options = ["All"] + player_like + others_filtered
         else:
             options = ["All"] + player_like
@@ -145,33 +170,53 @@ def main():
     if "character_select" not in st.session_state:
         st.session_state["character_select"] = "All"
 
-    selected_character = st.sidebar.selectbox("Character", options=options, index=0, key="character_select")
+    selected_character = st.sidebar.selectbox(
+        "Character", options=options, index=0, key="character_select"
+    )
 
     # ── Session summary banner ──────────────────────────────────────────
     try:
         _today = datetime.now().date()
-        _banner_df = df_chars[df_chars["combat_id"] > 0].copy() if not df_chars.empty else None
-        if _banner_df is not None and not _banner_df.empty and "timestamp_dt" in _banner_df.columns:
+        _banner_df = (
+            df_chars[df_chars["combat_id"] > 0].copy() if not df_chars.empty else None
+        )
+        if (
+            _banner_df is not None
+            and not _banner_df.empty
+            and "timestamp_dt" in _banner_df.columns
+        ):
             _banner_df = _banner_df[_banner_df["timestamp_dt"].dt.date == _today]
         if _banner_df is not None and not _banner_df.empty:
             _t_cids = _banner_df["combat_id"].unique()
             _n_enc = len(_t_cids)
-            _enc_times = _banner_df.groupby("combat_id")["timestamp_dt"].agg(["min", "max"])
-            _enc_times["dur"] = (_enc_times["max"] - _enc_times["min"]).dt.total_seconds().clip(lower=0)
+            _enc_times = _banner_df.groupby("combat_id")["timestamp_dt"].agg(
+                ["min", "max"]
+            )
+            _enc_times["dur"] = (
+                (_enc_times["max"] - _enc_times["min"]).dt.total_seconds().clip(lower=0)
+            )
             _total_played_s = int(_enc_times["dur"].sum())
             _played_str = (
                 f"{_total_played_s // 3600}h {(_total_played_s % 3600) // 60}m"
                 if _total_played_s >= 3600
                 else f"{_total_played_s // 60}m {_total_played_s % 60}s"
             )
-            _dmg = _banner_df[_banner_df["type"] == "damage"].groupby("combat_id")["effective_amount"].sum()
+            _dmg = (
+                _banner_df[_banner_df["type"] == "damage"]
+                .groupby("combat_id")["effective_amount"]
+                .sum()
+            )
             _enc_dps = (_dmg / _enc_times["dur"].clip(lower=1)).dropna()
             _best_cid = int(_enc_dps.idxmax()) if not _enc_dps.empty else None
             _best_dps_val = _enc_dps.max() if not _enc_dps.empty else 0
             _best_target = ""
             if _best_cid:
                 _bsub = _banner_df[_banner_df["combat_id"] == _best_cid]
-                _dmg_tgts = _bsub[_bsub["type"] == "damage"].groupby("target")["effective_amount"].sum()
+                _dmg_tgts = (
+                    _bsub[_bsub["type"] == "damage"]
+                    .groupby("target")["effective_amount"]
+                    .sum()
+                )
                 try:
                     _pn = _bsub["source"].mode().iloc[0]
                     _dmg_tgts = _dmg_tgts.drop(_pn, errors="ignore")
@@ -179,7 +224,9 @@ def main():
                     pass
                 if not _dmg_tgts.empty:
                     _best_target = str(_dmg_tgts.idxmax()).split("-")[0]
-            _best_str = f"{_fmt_compact_amount(_best_dps_val)} DPS" + (f" on {_best_target}" if _best_target else "")
+            _best_str = f"{_fmt_compact_amount(_best_dps_val)} DPS" + (
+                f" on {_best_target}" if _best_target else ""
+            )
             st.markdown(
                 f"<p style='margin:0 0 6px 0;font-size:0.82rem;color:#aaa;'>"
                 f"📅 Today &nbsp;·&nbsp; <b style='color:#fff'>{_n_enc}</b> encounters"
@@ -245,17 +292,30 @@ def main():
                     }
                 )
             )
-            csv_bytes = totals_df.sort_values(sort_opt, ascending=False).to_csv(index=False).encode()
-            st.download_button("Download targets CSV", csv_bytes, file_name="totals_targets.csv", mime="text/csv")
+            csv_bytes = (
+                totals_df.sort_values(sort_opt, ascending=False)
+                .to_csv(index=False)
+                .encode()
+            )
+            st.download_button(
+                "Download targets CSV",
+                csv_bytes,
+                file_name="totals_targets.csv",
+                mime="text/csv",
+            )
 
         with tab_ability:
-            _, _, dmg_spells, heal_spells, _ = compute_all_encounters_stats(character=char_arg)
+            _, _, dmg_spells, heal_spells, _ = compute_all_encounters_stats(
+                character=char_arg
+            )
             col_d, col_h = st.columns(2)
             with col_d:
                 st.subheader("Damage abilities")
                 if not dmg_spells.empty:
                     st.dataframe(
-                        dmg_spells.style.format({"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}),
+                        dmg_spells.style.format(
+                            {"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}
+                        ),
                         hide_index=True,
                     )
                     try:
@@ -292,7 +352,9 @@ def main():
                 st.subheader("Healing abilities")
                 if not heal_spells.empty:
                     st.dataframe(
-                        heal_spells.style.format({"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}),
+                        heal_spells.style.format(
+                            {"total": "{:,.0f}", "avg": "{:.1f}", "pct": "{:.1f}%"}
+                        ),
                         hide_index=True,
                     )
                     try:
@@ -336,7 +398,9 @@ def main():
         player_like_chars = sorted(
             [
                 n
-                for n in (df_chars["source"].dropna().unique() if not df_chars.empty else [])
+                for n in (
+                    df_chars["source"].dropna().unique() if not df_chars.empty else []
+                )
                 if len(str(n).split("-")) == 3 and all(str(n).split("-"))
             ]
         )
