@@ -110,13 +110,33 @@ The application includes:
 ## ⚙️ Configuration
 
 Key configuration locations:
-- `wow-parser.py` → `LOG_DIR` constant defines combat log path
+- `config.py` → `LOG_DIR` is now environment-configurable via `WOW_LOG_DIR` (preferred)
 - `streamlit_app.py` → various file paths (CSV, hidden combats, boss kills)
 
-Default combat log directory:
+Default combat log directory (developer fallback):
 ```
 /home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs
 ```
+
+Environment configuration:
+
+1. Export your WoW logs directory (recommended):
+
+```bash
+export WOW_LOG_DIR="$HOME/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
+```
+
+2. Run the parser or UI as usual:
+
+```bash
+python wow-parser.py --full-import
+streamlit run streamlit_app.py
+```
+
+Privacy note
+------------
+
+This repository previously included locally parsed combat CSVs and sidecar files derived from gameplay logs (timestamps, player/server identifiers). To avoid accidentally publishing personal gameplay data, those files are now ignored by the repository by default. Keep any raw or exported logs out of the tracked tree — the project expects you to run the parser locally to generate `parsed_combat_data.csv` and any sidecar artifacts.
 
 ## 📝 Data Format
 
