@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from utils.data_engine import compute_runs, spell_aggregates
-from utils.data_io import _fmt_compact_amount, load_csv
+from utils.data_io import _fmt_compact_amount, load_csv, load_healer_spells
 
 
 def runs_view():
@@ -42,11 +42,36 @@ def runs_view():
     unique_zones = runs_df["zone_name"].nunique()
     total_runs = len(runs_df)
     total_enc = int(runs_df["n_encounters"].sum())
-    h1, h2, h3, h4 = st.columns(4)
-    h1.metric("Total Runs", total_runs)
-    h2.metric("Boss Runs", boss_run_count)
-    h3.metric("Unique Zones", unique_zones)
-    h4.metric("Total Encounters", total_enc)
+    # Additional top-line metrics: total damage/heal and average DPS/HPS (compact)
+    total_damage = int(runs_df["total_damage"].sum()) if "total_damage" in runs_df.columns else 0
+    total_heal = int(runs_df["total_heal"].sum()) if "total_heal" in runs_df.columns else 0
+    avg_dps = round(runs_df["avg_dps"].mean(), 1) if "avg_dps" in runs_df.columns else 0.0
+    avg_hps = round(runs_df["avg_hps"].mean(), 1) if "avg_hps" in runs_df.columns else 0.0
+
+    # Show damage before healing to match other pages, with color-coding
+    h1, h2, h3, h4, h5, h6, h7, h8 = st.columns(8)
+
+    # small helper to render a colored metric (value on top, label below)
+    def _col_metric(col, label, value_html, value_color="#CCCCCC"):
+        col.markdown(
+            f"<div style='line-height:1.05'>"
+            f"<div style='font-size:2.1rem;color:{value_color};font-weight:700'>{value_html}</div>"
+            f"<div style='font-size:0.78rem;color:#999;margin-top:2px'>{label}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    _col_metric(h1, "Total Runs", f"{total_runs}")
+    _col_metric(h2, "Boss Runs", f"{boss_run_count}")
+    _col_metric(h3, "Unique Zones", f"{unique_zones}")
+    _col_metric(h4, "Total Encounters", f"{total_enc}")
+
+    dmg_html = _fmt_compact_amount(total_damage).replace("&nbsp;", " ").replace("<strong>", "").replace("</strong>", "")
+    heal_html = _fmt_compact_amount(total_heal).replace("&nbsp;", " ").replace("<strong>", "").replace("</strong>", "")
+    _col_metric(h5, "Total Damage", dmg_html, value_color="#7CFC00")
+    _col_metric(h6, "Total Heal", heal_html, value_color="#00CED1")
+    _col_metric(h7, "Avg DPS", f"{avg_dps:.1f}", value_color="#7CFC00")
+    _col_metric(h8, "Avg HPS", f"{avg_hps:.1f}", value_color="#00CED1")
 
     st.markdown("---")
 
@@ -92,11 +117,34 @@ def runs_view():
                 player_short = ""
         except Exception:
             player_short = ""
+        # Prefer precomputed run_role from compute_runs() (fast). Fall back to
+        # default DPS when not present. compute_runs() will already have
+        # scanned the sidecar and CSV to stamp `run_role` and `is_healer_run`.
+        run_role = str(r.get("run_role", "DPS")) if "run_role" in r else "DPS"
+        run_spec = str(r.get("run_spec", "")) if "run_spec" in r else ""
+        run_class = str(r.get("run_class", "")) if "run_class" in r else ""
+
+        # run_spec/run_class are precomputed in compute_runs(); fall back to
+        # deriving class from spec if present for older runs.
+        if not run_class and run_spec:
+            spec_to_class = {
+                "Mistweaver": "Monk",
+                "Restoration_Shaman": "Shaman",
+                "Restoration_Druid": "Druid",
+                "Holy_Paladin": "Paladin",
+                "Preservation_Evoker": "Evoker",
+                "Holy_Priest": "Priest",
+                "Discipline_Priest": "Priest",
+            }
+            run_class = spec_to_class.get(run_spec, "")
+
         table_rows.append(
             {
                 "run_id": int(r["run_id"]),
                 "Zone": str(r["zone_name"]),
                 "Player": player_short,
+                "PlayerClass": run_class,
+                "Role": run_role,
                 "Boss": str(r.get("boss_names", "")) or "",
                 "Date": r["start_dt"].strftime("%m/%d %H:%M") if pd.notna(r["start_dt"]) else "",
                 "Enc": int(r["n_encounters"]),
@@ -134,6 +182,25 @@ def runs_view():
             """
             )
 
+            # JS function to color Player name based on detected class
+            player_style_js = JsCode(
+                """
+            function(params) {
+              var cls = (params.data && params.data.PlayerClass) ? params.data.PlayerClass : '';
+              var map = {
+                'Druid': '#FF7C0A',
+                'Evoker': '#33937F',
+                'Monk': '#00FF98',
+                'Paladin': '#F48CBA',
+                'Priest': '#FFFFFF',
+                'Shaman': '#0070DD'
+              };
+              var c = map[cls] || '#9D89C9';
+              return {color: c, fontWeight: 'bold'};
+            }
+            """
+            )
+
             gb = GridOptionsBuilder.from_dataframe(table_df)
             gb.configure_column("run_id", header_name="#", width=40, minWidth=40, maxWidth=40, suppressSizeToFit=True)
             gb.configure_column(
@@ -146,8 +213,11 @@ def runs_view():
                 minWidth=80,
                 maxWidth=140,
                 suppressSizeToFit=True,
-                cellStyle={"color": "#9D89C9", "fontWeight": "bold"},
+                cellStyle=player_style_js,
             )
+            # role/class helper columns
+            gb.configure_column("Role", header_name="Role", width=90, minWidth=80, suppressSizeToFit=True)
+            gb.configure_column("PlayerClass", header_name="Class", hide=True)
             gb.configure_column("Boss", width=150, minWidth=100, cellStyle={"color": "#FFD700", "fontStyle": "italic"})
             gb.configure_column("Date", width=110, minWidth=90, maxWidth=120)
             gb.configure_column("Enc", width=55, minWidth=65, maxWidth=75, suppressSizeToFit=True)
@@ -304,6 +374,8 @@ def runs_view():
 
             # Build encounter rows — rendered at the bottom of this detail section
             enc_rows = []
+            # Load raw CSV once to compute per-encounter absorb amounts
+            _enc_raw = load_csv()
             for _, er in run_encs.iterrows():
                 _cid = int(er["combat_id"])
                 _is_boss = _cid in boss_kill_ids
@@ -312,6 +384,20 @@ def runs_view():
                 _target = str(er.get("main_target", "")) or "\u2014"
                 _disp_target = f"**{_star}{_target}**" if _is_boss else f"{_star}{_target}"
 
+                # Compute per-encounter absorb (if present in raw data)
+                try:
+                    _abs_amt = (
+                        int(
+                            _enc_raw[(_enc_raw["combat_id"] == _cid) & (_enc_raw["type"] == "absorb")][
+                                "effective_amount"
+                            ].sum()
+                        )
+                        if (_enc_raw is not None and not _enc_raw.empty)
+                        else 0
+                    )
+                except Exception:
+                    _abs_amt = 0
+
                 enc_rows.append(
                     {
                         "#": _cid,
@@ -319,7 +405,10 @@ def runs_view():
                         "Start": er["start_dt"].strftime("%H:%M:%S") if pd.notna(er["start_dt"]) else "",
                         "Duration": _dur_label(er["duration_s"]),
                         "Dmg": int(er.get("total_damage", 0)),
+                        "Heal": int(er.get("total_heal", 0)),
+                        "Absorb": int(_abs_amt),
                         "DPS": round(er["total_damage"] / er["duration_s"], 1) if er["duration_s"] > 0 else 0.0,
+                        "HPS": round(er.get("total_heal", 0) / er["duration_s"], 1) if er["duration_s"] > 0 else 0.0,
                         "is_boss": _is_boss,
                     }
                 )
@@ -341,7 +430,7 @@ def runs_view():
                 participants = []
                 for src, grp in _run_df.groupby("source"):
                     total_dmg = float(grp[grp["type"] == "damage"]["effective_amount"].sum())
-                    total_heal = float(grp[grp["type"] == "heal"]["effective_amount"].sum())
+                    total_heal = float(grp[grp["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
                     if total_dmg == 0 and total_heal == 0:
                         continue
                     # Active time = sum of encounter durations this source appears in
@@ -484,7 +573,7 @@ def runs_view():
                                 _dur = _enc_dur.get(_cid, 0)
                                 for _src, _sgrp in _enc_slice.groupby("source"):
                                     _sd = float(_sgrp[_sgrp["type"] == "damage"]["effective_amount"].sum())
-                                    _sh = float(_sgrp[_sgrp["type"] == "heal"]["effective_amount"].sum())
+                                    _sh = float(_sgrp[_sgrp["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
                                     if _sd == 0 and _sh == 0:
                                         continue
                                     _role, _short = _classify(_src)
@@ -566,7 +655,7 @@ def runs_view():
                 _raw_df = load_csv()
                 _run_df = _raw_df[_raw_df["combat_id"].isin(_run_cids)].copy()
                 dmg_agg_run = spell_aggregates(_run_df, "damage", top_n=200)
-                heal_agg_run = spell_aggregates(_run_df, "heal", top_n=200)
+                heal_agg_run = spell_aggregates(_run_df, ["heal", "absorb"], top_n=200)
                 st.subheader("Abilities in this run")
                 ad, ah = st.columns(2)
                 with ad:
@@ -697,7 +786,7 @@ def runs_view():
                 cols_to_disp = [c for c in enc_df_disp.columns if c != "is_boss"]
                 st.dataframe(
                     enc_df_disp[cols_to_disp]
-                    .style.format({"Dmg": "{:,}", "DPS": "{:.1f}"})
+                    .style.format({"Dmg": "{:,}", "Heal": "{:,}", "DPS": "{:.1f}", "HPS": "{:.1f}"})
                     .apply(
                         lambda row: [
                             (
@@ -713,58 +802,63 @@ def runs_view():
                     width="stretch",
                 )
 
-            if not enc_df_full.empty and len(enc_df_full) > 0:
+            if not enc_df_full.empty:
                 try:
-                    # Natural sort order for combat IDs
-                    _cid_order = [str(c) for c in enc_df_full["#"].tolist()]
-                    # Combine ID and Target for a unique, descriptive Y axis
+                    # 1. Prepare data for "Dual Bar" format
+                    # We need a long format where 'Value' is the amount and 'Type' defines the bar
                     chart_df = enc_df_full.copy()
                     chart_df["Label"] = chart_df.apply(lambda r: f"#{r['#']} {r['Target']}".replace("**", ""), axis=1)
-                    _label_order = chart_df["Label"].tolist()
 
-                    base = alt.Chart(chart_df).encode(
-                        y=alt.Y(
-                            "Label:N",
-                            title="Encounter",
-                            sort=_label_order,
-                            axis=alt.Axis(labelLimit=300, labelExpr="datum.label"),
-                        )
+                    # Melt DPS, HPS, and Absorb into rows
+                    # Ensure your enc_df_full actually has columns named 'HPS' and 'Absorb'
+                    melted_df = chart_df.melt(
+                        id_vars=["Label", "#", "Target", "is_boss", "Duration"],
+                        value_vars=["DPS", "HPS", "Absorb"],
+                        var_name="StatType",
+                        value_name="Value",
                     )
 
+                    # Map StatType to a "Row Group" so DPS is one bar, HPS+Absorb is the other
+                    melted_df["BarGroup"] = melted_df["StatType"].map(
+                        {"DPS": "Damage", "HPS": "Support", "Absorb": "Support"}
+                    )
+
+                    # 2. Define Colors
+                    color_scale = alt.Scale(
+                        domain=["DPS", "HPS", "Absorb"],
+                        range=["#FFD700", "#7CFC00", "#00BFFF"],  # Gold, Green, DeepSkyBlue
+                    )
+
+                    # 3. Build the Chart
+                    base = alt.Chart(melted_df).encode(
+                        y=alt.Y("Label:N", title="Encounter", sort=chart_df["Label"].tolist()),
+                        x=alt.X("sum(Value):Q", title="Value (DPS / HPS)"),
+                        color=alt.Color("StatType:N", scale=color_scale, title="Stat"),
+                        tooltip=["Target", "StatType:N", alt.Tooltip("sum(Value):Q", format=".1f", title="Value")],
+                    )
+
+                    # yOffset creates the "split" bar effect within one row
                     bars = base.mark_bar(opacity=0.85).encode(
-                        x=alt.X("DPS:Q", title="DPS"),
-                        color=alt.condition(
-                            alt.datum.is_boss,
-                            alt.value("#FFD700"),
-                            alt.value("#7CFC00"),
-                        ),
-                        tooltip=[
-                            alt.Tooltip("#:N", title="Combat ID"),
-                            "Target",
-                            alt.Tooltip("is_boss:N", title="Boss Kill"),
-                            alt.Tooltip("DPS:Q", format=".1f"),
-                            "Duration",
-                        ],
+                        yOffset="BarGroup:N",
+                        # This splits the row into two half-height bars
                     )
 
-                    text = base.mark_text(
-                        align="right",
-                        baseline="middle",
-                        dx=-5,
-                        color="#000000",
-                        fontWeight="bold",
-                    ).encode(
-                        x=alt.X("DPS:Q"),
-                        text=alt.Text("DPS:Q", format=".1f"),
+                    # Add text labels for each bar
+                    text = base.mark_text(align="left", baseline="middle", dx=5, fontSize=10, fontWeight="bold").encode(
+                        yOffset="BarGroup:N", text=alt.Text("sum(Value):Q", format=".1f")
                     )
 
-                    chart = (bars + text).properties(
-                        height=max(80, len(chart_df) * 35), title=f"DPS per encounter \u2014 {zone_label}"
+                    final_chart = (
+                        (bars + text)
+                        .properties(
+                            height=len(chart_df) * 50,  # Slightly taller rows to accommodate dual bars
+                            title=f"Performance per encounter — {zone_label}",
+                        )
+                        .configure_view(strokeOpacity=0)  # Cleans up the grid look
                     )
 
-                    st.altair_chart(chart, width="stretch")
-                except Exception:
-                    pass
-                except Exception:
-                    pass
+                    st.altair_chart(final_chart, width="stretch")
+
+                except Exception as e:
+                    st.error(f"Chart Error: {e}")
             st.caption("Navigate to **Combat Viewer** to inspect any individual encounter in full detail.")

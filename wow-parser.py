@@ -9,7 +9,16 @@ import shutil
 import time
 from datetime import datetime
 
-from config import BOSS_KILLS_PATH, CSV_BACKUP_DIR, CSV_PATH, DATA_DIR, LOG_DIR, MAX_CSV_BACKUPS
+from config import (
+    BOSS_KILLS_PATH,
+    CSV_BACKUP_DIR,
+    CSV_PATH,
+    DATA_DIR,
+    LOG_DIR,
+    MAX_CSV_BACKUPS,
+)
+# Note: CSV stores only `spell_id`; `source_spec`/`source_role` are not persisted
+
 
 # Alias kept so existing references inside this file don't need touching.
 OUTPUT_CSV = CSV_PATH
@@ -66,6 +75,66 @@ def parse_combat_line(line, current_char_name):
     if is_active_player and current_char_name is None:
         current_char_name = source_name
 
+    # ── SPELL_ABSORBED special case ──────────────────────────────────────────
+    # src/dst fields describe attacker→defender (enemy→player), so is_mine on
+    # src will always be False.  The shield *caster* sits deeper in the row.
+    #
+    # Two variants exist (distinguished by whether field[8] is a GUID or a
+    # numeric spell ID):
+    #
+    #   Melee/auto variant (18 fields):
+    #     [0..7] = std src/dst block
+    #     [8]  casterGUID  [9] casterName  [10] casterFlags  [11] casterFlags2
+    #     [12] shieldSpellID  [13] "shieldName"  [14] school
+    #     [15] amount  [16] remaining  [17] nil
+    #
+    #   Spell-attack variant (21 fields):
+    #     [0..7] = std src/dst block
+    #     [8]  attackSpellID  [9] "attackSpellName"  [10] school
+    #     [11] casterGUID  [12] casterName  [13] casterFlags  [14] casterFlags2
+    #     [15] shieldSpellID  [16] "shieldName"  [17] school
+    #     [18] amount  [19] remaining  [20] nil
+    if event_type == "SPELL_ABSORBED" and len(rest_parts) >= 18:
+
+        def _safe_int(v):
+            try:
+                return int(v)
+            except Exception:
+                return 0
+
+        if rest_parts[8][0].isdigit():
+            # Spell-attack variant
+            if len(rest_parts) < 21:
+                return None, current_char_name
+            caster_name = rest_parts[12].replace('"', "")
+            caster_flags = _parse_flags(rest_parts[13])
+            shield_name = rest_parts[16].replace('"', "")
+            amount = _safe_int(rest_parts[18])
+        else:
+            # Melee/auto variant
+            caster_name = rest_parts[9].replace('"', "")
+            caster_flags = _parse_flags(rest_parts[10])
+            shield_name = rest_parts[13].replace('"', "")
+            amount = _safe_int(rest_parts[15])
+
+        if not bool(caster_flags & 0x1):
+            return None, current_char_name
+
+        if (caster_flags & 0x401) == 0x401 and current_char_name is None:
+            current_char_name = caster_name
+
+        target_name = rest_parts[5].replace('"', "") if len(rest_parts) > 5 else ""
+        return {
+            "timestamp": timestamp_str,
+            "event": event_type,
+            "source": caster_name,
+            "target": target_name,
+            "spell_name": shield_name,
+            "amount": amount,
+            "effective_amount": amount,
+            "type": "absorb",
+        }, current_char_name
+
     # Only interested in actions performed by the player (or their pet/totem).
     if not is_mine:
         return None, current_char_name
@@ -79,6 +148,7 @@ def parse_combat_line(line, current_char_name):
         "amount": 0,
         "effective_amount": 0,
         "type": "other",
+        "spell_id": 0,
     }
 
     # Helper to parse integers and handle 'nil'
@@ -92,7 +162,38 @@ def parse_combat_line(line, current_char_name):
     if "HEAL" in event_type and len(rest_parts) >= 10:
         data["type"] = "heal"
         # Spell name is at index 9 in the rest_parts (spell id at 8)
-        data["spell_name"] = rest_parts[9].replace('"', "") if len(rest_parts) > 9 else "Unknown"
+        data["spell_name"] = (
+            rest_parts[9].replace('"', "") if len(rest_parts) > 9 else "Unknown"
+        )
+        # Robust spell_id extraction: try several candidate positions and
+        # also attempt to locate the spell_name in the parts and take the
+        # preceding numeric token as the id when possible.
+        sid = 0
+        try:
+            # candidate indices commonly used for spell id
+            candidates = [8, 11, 15]
+            for c in candidates:
+                if len(rest_parts) > c and str(rest_parts[c]).isdigit():
+                    sid = int(rest_parts[c])
+                    break
+            # fallback: find the index of the spell name and use the token before it
+            if sid == 0:
+                sname = data["spell_name"]
+                for idx, val in enumerate(rest_parts):
+                    if isinstance(val, str) and val.replace('"', "") == sname and idx > 0:
+                        prev = rest_parts[idx - 1]
+                        if str(prev).isdigit():
+                            sid = int(prev)
+                            break
+        except Exception:
+            sid = 0
+        data["spell_id"] = sid
+        # spell id (best-effort)
+        try:
+            sid = int(rest_parts[8]) if len(rest_parts) > 8 and str(rest_parts[8]).isdigit() else 0
+        except Exception:
+            sid = 0
+        data["spell_id"] = sid
         # Destination/target name is typically at index 5
         if len(rest_parts) > 5:
             data["target"] = rest_parts[5].replace('"', "")
@@ -104,11 +205,39 @@ def parse_combat_line(line, current_char_name):
     # Parse Damage
     elif "DAMAGE" in event_type and "SPELL" in event_type and len(rest_parts) >= 10:
         data["type"] = "damage"
-        data["spell_name"] = rest_parts[9].replace('"', "") if len(rest_parts) > 9 else "Unknown"
+        data["spell_name"] = (
+            rest_parts[9].replace('"', "") if len(rest_parts) > 9 else "Unknown"
+        )
+        # Robust extraction for damage spell id (same approach as heals)
+        sid = 0
+        try:
+            candidates = [8, 11, 15]
+            for c in candidates:
+                if len(rest_parts) > c and str(rest_parts[c]).isdigit():
+                    sid = int(rest_parts[c])
+                    break
+            if sid == 0:
+                sname = data["spell_name"]
+                for idx, val in enumerate(rest_parts):
+                    if isinstance(val, str) and val.replace('"', "") == sname and idx > 0:
+                        prev = rest_parts[idx - 1]
+                        if str(prev).isdigit():
+                            sid = int(prev)
+                            break
+        except Exception:
+            sid = 0
+        data["spell_id"] = sid
+        try:
+            sid = int(rest_parts[8]) if len(rest_parts) > 8 and str(rest_parts[8]).isdigit() else 0
+        except Exception:
+            sid = 0
+        data["spell_id"] = sid
         # Destination/target name is typically at index 5
         if len(rest_parts) > 5:
             data["target"] = rest_parts[5].replace('"', "")
-        amount = to_int(rest_parts[-11]) if len(rest_parts) >= 11 else to_int(rest_parts[-1])
+        amount = (
+            to_int(rest_parts[-11]) if len(rest_parts) >= 11 else to_int(rest_parts[-1])
+        )
         data["amount"] = amount
         data["effective_amount"] = amount
 
@@ -116,6 +245,7 @@ def parse_combat_line(line, current_char_name):
     elif event_type == "SWING_DAMAGE" and len(rest_parts) >= 1:
         data["type"] = "damage"
         data["spell_name"] = "Melee"
+        data["spell_id"] = 0
         if len(rest_parts) > 5:
             data["target"] = rest_parts[5].replace('"', "")
         amt = to_int(rest_parts[-8]) if len(rest_parts) >= 8 else to_int(rest_parts[-1])
@@ -140,7 +270,9 @@ def run_test_mode(filepath, debug=False):
 
     with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
-            parsed_data, current_char_name = parse_combat_line(line.strip(), current_char_name)
+            parsed_data, current_char_name = parse_combat_line(
+                line.strip(), current_char_name
+            )
 
             if not parsed_data:
                 continue
@@ -162,14 +294,18 @@ def run_test_mode(filepath, debug=False):
             # Aggregation
             if parsed_data["type"] == "damage":
                 total_damage += parsed_data["effective_amount"]
-            elif parsed_data["type"] == "heal":
+            elif parsed_data["type"] in ("heal", "absorb"):
                 total_healing += parsed_data["effective_amount"]
 
     if debug:
         return  # Skip the table if we are just debugging lines
 
     # Calculate Summary
-    if not first_event_time or not last_event_time or first_event_time == last_event_time:
+    if (
+        not first_event_time
+        or not last_event_time
+        or first_event_time == last_event_time
+    ):
         duration_seconds = 1  # Avoid division by zero
     else:
         duration_seconds = (last_event_time - first_event_time).total_seconds()
@@ -178,10 +314,14 @@ def run_test_mode(filepath, debug=False):
     avg_hps = total_healing / duration_seconds
 
     # Print Table
-    print(f"| {'Player':<25} | {'Avg DPS':<10} | {'Avg HPS':<10} | {'Duration (s)':<12} |")
+    print(
+        f"| {'Player':<25} | {'Avg DPS':<10} | {'Avg HPS':<10} | {'Duration (s)':<12} |"
+    )
     print("-" * 66)
     name_display = current_char_name if current_char_name else "No Player Found"
-    print(f"| {name_display:<25} | {avg_dps:<10.1f} | {avg_hps:<10.1f} | {duration_seconds:<12.1f} |")
+    print(
+        f"| {name_display:<25} | {avg_dps:<10.1f} | {avg_hps:<10.1f} | {duration_seconds:<12.1f} |"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +489,12 @@ def _parse_encounter_event(line):
             kill_flag = int(parts[4]) if len(parts) > 4 else 0
         except (ValueError, TypeError):
             kill_flag = 0
-        return {"event": "END", "dt": dt, "boss_name": boss_name, "kill_flag": kill_flag}
+        return {
+            "event": "END",
+            "dt": dt,
+            "boss_name": boss_name,
+            "kill_flag": kill_flag,
+        }
 
 
 def extract_boss_kills(lines):
@@ -369,7 +514,11 @@ def extract_boss_kills(lines):
         if ev is None:
             continue
         if ev["event"] == "START":
-            open_boss = {"boss_name": ev["boss_name"], "start_dt": ev["dt"], "zone_id": ev["zone_id"]}
+            open_boss = {
+                "boss_name": ev["boss_name"],
+                "start_dt": ev["dt"],
+                "zone_id": ev["zone_id"],
+            }
         elif ev["event"] == "END" and open_boss is not None:
             boss_kills.append(
                 {
@@ -610,6 +759,8 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
+        # New column for class/spec detection
+        "spell_id",
     ]
 
     # Pass 1 – detect encounter intervals using the full (unfiltered) log.
@@ -618,6 +769,7 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
     print(f"  Detected {len(encounters)} encounter(s).")
 
     # Pass 2 – extract player events and stamp each with the right combat_id.
+    src_map = {}
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(header)
@@ -625,16 +777,24 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
         current_char_name = None
         with open(filepath, "r", encoding="utf-8") as infile:
             for line in infile:
-                parsed_data, current_char_name = parse_combat_line(line.strip(), current_char_name)
+                parsed_data, current_char_name = parse_combat_line(
+                    line.strip(), current_char_name
+                )
                 if not parsed_data:
                     continue
 
                 try:
-                    dt = datetime.strptime(parsed_data.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f")
+                    dt = datetime.strptime(
+                        parsed_data.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f"
+                    )
                 except Exception:
                     dt = None
 
                 cid, zone_id, zone_name = assign_encounter_info(dt, encounters)
+
+                # Previously we used parser-side spec tagging; to keep schema
+                # stable we now only persist spell_id. UI layers perform run-level
+                # classification based on healer_spells sidecar when rendering.
 
                 writer.writerow(
                     [
@@ -649,6 +809,7 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
                         parsed_data.get("type", ""),
                         zone_id,
                         zone_name,
+                        parsed_data.get("spell_id", 0),
                     ]
                 )
 
@@ -674,7 +835,9 @@ def _backup_file(path, backup_dir=CSV_BACKUP_DIR, keep=MAX_CSV_BACKUPS):
         print(f"Warning: failed to backup {path}: {e}")
         return
     # Prune oldest backups in the backup dir beyond the keep limit.
-    baks = sorted(glob.glob(os.path.join(backup_dir, os.path.basename(path) + ".bak.*")))
+    baks = sorted(
+        glob.glob(os.path.join(backup_dir, os.path.basename(path) + ".bak.*"))
+    )
     while len(baks) > keep:
         oldest = baks.pop(0)
         try:
@@ -732,6 +895,8 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
+        # New column for class/spec detection
+        "spell_id",
     ]
 
     # Pass 1 – stream all files through the encounter detector as one sequence.
@@ -747,6 +912,7 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
     print(f"  Detected {len(encounters)} encounter(s) across {len(filepaths)} file(s).")
 
     # Pass 2 – extract player events and stamp each with the right combat_id.
+    src_map = {}
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(header)
@@ -756,16 +922,23 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
             try:
                 with _open_log(fp) as infile:
                     for line in infile:
-                        parsed_data, current_char_name = parse_combat_line(line.strip(), current_char_name)
+                        parsed_data, current_char_name = parse_combat_line(
+                            line.strip(), current_char_name
+                        )
                         if not parsed_data:
                             continue
 
                         try:
-                            dt = datetime.strptime(parsed_data.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f")
+                            dt = datetime.strptime(
+                                parsed_data.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f"
+                            )
                         except Exception:
                             dt = None
 
                         cid, zone_id, zone_name = assign_encounter_info(dt, encounters)
+
+                        # Detection no longer performed at parse time; renderer will
+                        # classify runs based on spell_id and the sidecar heuristics.
 
                         writer.writerow(
                             [
@@ -780,6 +953,7 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
                                 parsed_data.get("type", ""),
                                 zone_id,
                                 zone_name,
+                                parsed_data.get("spell_id", 0),
                             ]
                         )
             except Exception:
@@ -830,6 +1004,8 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
+        # New column for class/spec detection
+        "spell_id",
     ]
 
     # Continue combat_id numbering from what is already in the CSV.
@@ -863,11 +1039,15 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
         combat_id += 1
         rows = []
         for raw_line in line_buffer:
-            parsed, current_char_name = parse_combat_line(raw_line.strip(), current_char_name)
+            parsed, current_char_name = parse_combat_line(
+                raw_line.strip(), current_char_name
+            )
             if not parsed:
                 continue
             try:
-                evt_dt = datetime.strptime(parsed.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f")
+                evt_dt = datetime.strptime(
+                    parsed.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f"
+                )
             except Exception:
                 evt_dt = None
             # Only stamp rows that fall inside the encounter window.
@@ -875,21 +1055,22 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                 cid = combat_id
             else:
                 cid = 0
-            rows.append(
-                [
-                    cid,
-                    parsed.get("timestamp", ""),
-                    parsed.get("event", ""),
-                    parsed.get("source", ""),
-                    parsed.get("target", ""),
-                    parsed.get("spell_name", ""),
-                    parsed.get("amount", 0),
-                    parsed.get("effective_amount", 0),
-                    parsed.get("type", ""),
-                    encounter_zone_id,
-                    encounter_zone_name,
-                ]
-            )
+                rows.append(
+                    [
+                        cid,
+                        parsed.get("timestamp", ""),
+                        parsed.get("event", ""),
+                        parsed.get("source", ""),
+                        parsed.get("target", ""),
+                        parsed.get("spell_name", ""),
+                        parsed.get("amount", 0),
+                        parsed.get("effective_amount", 0),
+                        parsed.get("type", ""),
+                        encounter_zone_id,
+                        encounter_zone_name,
+                        parsed.get("spell_id", 0),
+                    ]
+                )
         # Drop out-of-combat rows (cid=0) — they carry no combat-meter value.
         rows = [r for r in rows if r[0] != 0]
         if rows:
@@ -974,7 +1155,9 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                     elif _bev["event"] == "END" and _open_boss is not None:
                         bk = {
                             "boss_name": _open_boss["boss_name"],
-                            "start_ts": _open_boss["start_dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
+                            "start_ts": _open_boss["start_dt"].strftime(
+                                "%m/%d/%Y %H:%M:%S.%f"
+                            ),
                             "end_ts": _bev["dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
                             "kill_flag": _bev.get("kill_flag", 0),
                             "zone_id": _open_boss["zone_id"],
@@ -988,7 +1171,9 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
 
                 # ── Timeout check against the incoming line's timestamp ──
                 if raw and encounter_start is not None and last_hostile_dt is not None:
-                    if (raw["dt"] - last_hostile_dt).total_seconds() > ENCOUNTER_TIMEOUT_SECS:
+                    if (
+                        raw["dt"] - last_hostile_dt
+                    ).total_seconds() > ENCOUNTER_TIMEOUT_SECS:
                         print("  Timeout: closing encounter.")
                         _close_encounter(last_hostile_dt)
                         # line_buffer is now clear; continue to process this line below.
@@ -1041,7 +1226,10 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                             # All tracked enemies are dead → close encounter.
                             _close_encounter(dt)
 
-                    elif bool(dst_flags & _FLAG_TYPE_PLAYER) and encounter_start is not None:
+                    elif (
+                        bool(dst_flags & _FLAG_TYPE_PLAYER)
+                        and encounter_start is not None
+                    ):
                         # Player died → close encounter immediately.
                         _close_encounter(dt)
 
@@ -1101,7 +1289,9 @@ if __name__ == "__main__":
 
         # Sort by the timestamp encoded in the filename for true chronological order.
         files_sorted = sorted(all_files, key=_log_sort_key)
-        print(f"Full import: {len(files_sorted)} file(s) ({len(archived)} compressed, {len(live)} live).")
+        print(
+            f"Full import: {len(files_sorted)} file(s) ({len(archived)} compressed, {len(live)} live)."
+        )
         # backup existing CSV
         _backup_file(OUTPUT_CSV)
         export_csv_from_files(files_sorted, csv_path=OUTPUT_CSV)

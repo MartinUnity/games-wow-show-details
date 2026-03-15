@@ -37,7 +37,7 @@ def summary_view(df, num_combats=10):
             .sum()
             .rename("total_damage")
             .to_frame()
-            .join(df[df["type"] == "heal"].groupby("combat_id")["effective_amount"].sum().rename("total_heal"))
+            .join(df[df["type"].isin(["heal", "absorb"])].groupby("combat_id")["effective_amount"].sum().rename("total_heal"))
             .fillna(0)
         )
 

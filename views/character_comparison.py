@@ -327,7 +327,7 @@ def character_comparison_view(available_chars: list):
                 enc_row = enc_times_full[(enc_times_full["source"] == char) & (enc_times_full["combat_id"] == cid)]
                 dur = float(enc_row["duration_s"].iloc[0]) if not enc_row.empty else 0.0
                 dmg = float(sub[sub["type"] == "damage"]["effective_amount"].sum())
-                heal = float(sub[sub["type"] == "heal"]["effective_amount"].sum())
+                heal = float(sub[sub["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
                 rows.append(
                     {
                         "character": char.split("-")[0],

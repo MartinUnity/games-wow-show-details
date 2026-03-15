@@ -69,6 +69,8 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
     total_damage = combat_df[combat_df["type"] == "damage"]["effective_amount"].sum()
     total_dmg_raw = combat_df[combat_df["type"] == "damage"]["amount"].sum()
     total_heal = combat_df[combat_df["type"] == "heal"]["effective_amount"].sum()
+    total_absorb = combat_df[combat_df["type"] == "absorb"]["effective_amount"].sum()
+    total_heal_all = total_heal + total_absorb
     start = combat_df["timestamp_dt"].min()
     end = combat_df["timestamp_dt"].max()
     duration = (end - start).total_seconds() if pd.notna(start) and pd.notna(end) and end > start else 0.0
@@ -104,7 +106,7 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
 
     # Show DPS/HPS like the Live panel for a uniform layout
     dps = total_damage / duration if duration > 0 else 0.0
-    hps = total_heal / duration if duration > 0 else 0.0
+    hps = total_heal_all / duration if duration > 0 else 0.0
 
     cols = st.columns(5)
     cols[0].metric("DPS", f"{dps:.1f}")
@@ -113,7 +115,11 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
     cols[3].metric("Time to 1st kill", f"{ttk:.1f}s" if ttk is not None else "—")
     cols[4].metric("Overkill", f"{overkill_pct:.1f}%" if overkill_pct is not None else "—")
 
-    st.write(f"Total damage: {int(total_damage)} — Total healing: {int(total_heal)}")
+    if total_absorb > 0:
+        heal_parts = f"{int(total_heal):,} healed + {int(total_absorb):,} absorbed"
+    else:
+        heal_parts = f"{int(total_heal_all):,}"
+    st.write(f"Total damage: {int(total_damage):,} — Total healing: {heal_parts}")
 
     # ── Damage split by target ───────────────────────────────────────────
     try:
@@ -166,7 +172,7 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
 
     # Aggregated per-spell tables/charts (damage & healing)
     dmg_agg = spell_aggregates(combat_df, "damage", top_n=top_n)
-    heal_agg = spell_aggregates(combat_df, "heal", top_n=top_n)
+    heal_agg = spell_aggregates(combat_df, ["heal", "absorb"], top_n=top_n)
     if not dmg_agg.empty or not heal_agg.empty:
         st.subheader("By ability")
         # Use dynamic table height based on number of abilities so both columns align
@@ -211,7 +217,10 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
             st.markdown("**Healing by ability**")
             if not heal_agg.empty:
                 ha = heal_agg.reset_index(drop=True)
-                styled_h = ha.style.format({"total": "{:,}", "avg": "{:.1f}", "pct": "{:.1f}%"}).apply(
+                # Friendly label for display
+                ha["Kind"] = ha["kind"].map({"heal": "Heal", "absorb": "Absorb"}).fillna(ha["kind"])
+                display_ha = ha.drop(columns=["kind"])
+                styled_h = display_ha.style.format({"total": "{:,}", "avg": "{:.1f}", "pct": "{:.1f}%"}).apply(
                     lambda row: [("background-color: #2f2f2f" if row.name % 2 == 0 else "color: #ffffff") for _ in row],
                     axis=1,
                 )
@@ -227,7 +236,15 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
                         .encode(
                             x=alt.X("total:Q"),
                             y=alt.Y("spell:N", sort="-x", axis=alt.Axis(labelLimit=_lw2h, labelFontSize=10)),
-                            tooltip=["spell", "total", "count", "avg", "pct"],
+                            color=alt.Color(
+                                "kind:N",
+                                scale=alt.Scale(
+                                    domain=["heal", "absorb"],
+                                    range=["#4CAF50", "#42A5F5"],
+                                ),
+                                legend=alt.Legend(title="Kind"),
+                            ),
+                            tooltip=["spell", "Kind", "total", "count", "avg", "pct"],
                         )
                     )
                     st.altair_chart(chart_h.properties(height=heal_chart_h), width="stretch")
@@ -272,7 +289,7 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
         tl_df = combat_df[
             combat_df["spell_name"].notna()
             & (combat_df["spell_name"] != "")
-            & combat_df["type"].isin(["damage", "heal"])
+            & combat_df["type"].isin(["damage", "heal", "absorb"])
         ].copy()
         if not tl_df.empty and pd.notna(start):
             tl_df["elapsed_s"] = (tl_df["timestamp_dt"] - start).dt.total_seconds()
@@ -306,22 +323,65 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
                     .properties(height=timeline_height)
                 )
                 st.altair_chart(tl_chart, width="stretch")
+                # --- Ability uptime bars: percent of fight where the ability had activity ---
+                try:
+                    # total seconds in combat (ceil to include partial final second)
+                    import math
+
+                    total_secs = max(1, int(math.ceil(duration)))
+                    # bucket events into integer seconds
+                    tl_df["_sec"] = tl_df["elapsed_s"].floordiv(1).astype(int)
+                    uptime_rows = []
+                    for s in top_spells:
+                        sub = tl_df[tl_df["spell_name"] == s]
+                        if sub.empty:
+                            secs = 0
+                        else:
+                            secs = int(sub["_sec"].nunique())
+                        pct = secs / total_secs * 100
+                        uptime_rows.append({"spell": s, "seconds": secs, "uptime_pct": pct})
+                    up_df = pd.DataFrame(uptime_rows)
+                    # keep the same ordering as the timeline
+                    up_df["spell"] = pd.Categorical(up_df["spell"], categories=top_spells, ordered=True)
+                    up_chart_h = max(120, 30 * len(up_df))
+                    # add formatted label for display inside the bar
+                    up_df["pct_lbl"] = up_df["uptime_pct"].map(lambda v: f"{v:.1f}%")
+                    base = alt.Chart(up_df).encode(
+                        y=alt.Y("spell:N", sort=top_spells, axis=alt.Axis(labelLimit=300)),
+                    )
+                    bars = base.mark_bar(color="#7CFC00").encode(
+                        x=alt.X("uptime_pct:Q", title="Uptime %", axis=alt.Axis(format=".1f")),
+                        tooltip=["spell", "seconds", alt.Tooltip("uptime_pct:Q", format=".1f")],
+                    )
+                    text = base.mark_text(
+                        align="right", baseline="middle", dx=-6, color="#000000", fontWeight="bold"
+                    ).encode(
+                        x=alt.X("uptime_pct:Q"),
+                        text=alt.Text("pct_lbl:N"),
+                    )
+                    up_chart = (bars + text).properties(height=up_chart_h)
+                    st.subheader("Ability uptime")
+                    st.altair_chart(up_chart, width="stretch")
+                except Exception:
+                    pass
             except Exception:
                 pass
     except Exception:
         pass
 
-    # Share / Export (CSV + optional GIF replay)
+    # ── Enable 2D Replay ──────────────────────────────
     try:
-        col_replay, col_share = st.columns([1, 1])
-        with col_replay:
-            show_replay = st.checkbox(
-                "Enable 2D Replay", value=False, help="Requires Advanced Combat Logging logs.", key=f"replay_{combat_id}"
-            )
-        with col_share:
-            register_share_ui(combat_df, combat_id)
+        show_replay = st.checkbox(
+            "Enable 2D Replay",
+            value=False,
+            help="Requires Advanced Combat Logging logs.",
+            key=f"replay_{combat_id}",
+        )
     except Exception:
         pass
+
+    # ── Share / Export (CSV + optional GIF replay) ──────────────────────────────
+    register_share_ui(combat_df, combat_id)
 
     with st.expander("Recent events", expanded=False):
         st.dataframe(

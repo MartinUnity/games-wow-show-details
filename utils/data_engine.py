@@ -10,7 +10,7 @@ they do not trigger page rendering.
 import pandas as pd
 import streamlit as st
 
-from utils.data_io import CSV_PATH, load_boss_kills, load_csv
+from utils.data_io import CSV_PATH, load_boss_kills, load_csv, load_healer_spells
 
 # ── 1. Time-series builder ────────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ def combat_time_series(combat_df, resample_s=1, spell_filter=None):
 
     ts = combat_df.set_index("timestamp_dt").sort_index()
     dmg = ts[ts["type"] == "damage"]["effective_amount"].resample(f"{resample_s}s").sum()
-    heal = ts[ts["type"] == "heal"]["effective_amount"].resample(f"{resample_s}s").sum()
+    heal = ts[ts["type"].isin(["heal", "absorb"])]["effective_amount"].resample(f"{resample_s}s").sum()
     df_ts = pd.DataFrame({"DPS": dmg, "HPS": heal}).fillna(0)
 
     # If a spell filter is provided, compute per-spell series and attach
@@ -46,7 +46,7 @@ def combat_time_series(combat_df, resample_s=1, spell_filter=None):
                 df_ts["Selected_HPS"] = 0
             elif kind == "healing":
                 sel_h = (
-                    ts[(ts["spell_name"] == spell_name) & (ts["type"] == "heal")]["effective_amount"]
+                    ts[(ts["spell_name"] == spell_name) & (ts["type"].isin(["heal", "absorb"]))]["effective_amount"]
                     .resample(f"{resample_s}s")
                     .sum()
                 )
@@ -59,7 +59,7 @@ def combat_time_series(combat_df, resample_s=1, spell_filter=None):
                     .sum()
                 )
                 sel_h = (
-                    ts[(ts["spell_name"] == spell_name) & (ts["type"] == "heal")]["effective_amount"]
+                    ts[(ts["spell_name"] == spell_name) & (ts["type"].isin(["heal", "absorb"]))]["effective_amount"]
                     .resample(f"{resample_s}s")
                     .sum()
                 )
@@ -76,10 +76,18 @@ def combat_time_series(combat_df, resample_s=1, spell_filter=None):
 
 
 def spell_aggregates(combat_df, event_type, top_n=10):
-    """Return a DataFrame with per-spell aggregates: count, total, avg, pct."""
+    """Return a DataFrame with per-spell aggregates: count, total, avg, pct.
+
+    *event_type* may be a single string (e.g. ``"damage"``) or a list of
+    strings (e.g. ``["heal", "absorb"]``) to aggregate multiple types together.
+    When a list is passed a ``kind`` column is included showing the dominant
+    type for each spell (useful for colour-coding in charts).
+    """
     if combat_df.empty:
         return pd.DataFrame()
-    df = combat_df[combat_df["type"] == event_type]
+    multi = not isinstance(event_type, str)
+    types = list(event_type) if multi else [event_type]
+    df = combat_df[combat_df["type"].isin(types)]
     if df.empty:
         return pd.DataFrame()
     agg = (
@@ -91,6 +99,20 @@ def spell_aggregates(combat_df, event_type, top_n=10):
     total_all = agg["total"].sum()
     agg["pct"] = agg["total"] / total_all * 100
     agg = agg.reset_index().rename(columns={"spell_name": "spell"})
+    if multi:
+        # Dominant type per spell (highest total wins — in practice each spell
+        # is always one type, so this is deterministic).
+        kind_map = (
+            df.groupby(["spell_name", "type"])["effective_amount"]
+            .sum()
+            .reset_index()
+            .sort_values("effective_amount", ascending=False)
+            .drop_duplicates(subset="spell_name")
+            .rename(columns={"spell_name": "spell", "type": "kind"})
+            .set_index("spell")["kind"]
+        )
+        agg["kind"] = agg["spell"].map(kind_map).fillna(types[0])
+        return agg[["spell", "kind", "count", "total", "avg", "pct"]].head(top_n)
     return agg[["spell", "count", "total", "avg", "pct"]].head(top_n)
 
 
@@ -141,7 +163,7 @@ def compute_totals_summary(path=CSV_PATH, character=None):
                 spans.append((e - s).total_seconds())
         total_time = sum(spans)
         total_damage = float(sub[sub["type"] == "damage"]["effective_amount"].sum())
-        total_heal = float(sub[sub["type"] == "heal"]["effective_amount"].sum())
+        total_heal = float(sub[sub["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
         dps = total_damage / total_time if total_time > 0 else 0.0
         hps = total_heal / total_time if total_time > 0 else 0.0
         target_rows.append(
@@ -198,13 +220,15 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
     enc_times = df.groupby("combat_id")["timestamp_dt"].agg(["min", "max"])
     enc_times["duration_s"] = (enc_times["max"] - enc_times["min"]).dt.total_seconds().clip(lower=0)
     dmg_per_enc = df[df["type"] == "damage"].groupby("combat_id")["effective_amount"].sum().rename("total_damage")
-    heal_per_enc = df[df["type"] == "heal"].groupby("combat_id")["effective_amount"].sum().rename("total_heal")
+    heal_per_enc = (
+        df[df["type"].isin(["heal", "absorb"])].groupby("combat_id")["effective_amount"].sum().rename("total_heal")
+    )
     enc_df = enc_times.join(dmg_per_enc).join(heal_per_enc).fillna(0).reset_index()
     enc_df["dps"] = enc_df.apply(lambda r: r["total_damage"] / r["duration_s"] if r["duration_s"] > 0 else 0, axis=1)
     enc_df["hps"] = enc_df.apply(lambda r: r["total_heal"] / r["duration_s"] if r["duration_s"] > 0 else 0, axis=1)
 
     total_damage = float(df[df["type"] == "damage"]["effective_amount"].sum())
-    total_heal = float(df[df["type"] == "heal"]["effective_amount"].sum())
+    total_heal = float(df[df["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
     total_duration = float(enc_times["duration_s"].sum())
     n_encounters = int(enc_times.shape[0])
 
@@ -218,7 +242,8 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
     }
 
     def _spell_agg(event_type, top_n=40):
-        d = df[df["type"] == event_type]
+        types = [event_type] if isinstance(event_type, str) else list(event_type)
+        d = df[df["type"].isin(types)]
         if d.empty:
             return pd.DataFrame()
         agg = (
@@ -268,7 +293,7 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
     else:
         top_targets = pd.DataFrame()
 
-    return meta, enc_df, _spell_agg("damage"), _spell_agg("heal"), top_targets
+    return meta, enc_df, _spell_agg("damage"), _spell_agg(["heal", "absorb"]), top_targets
 
 
 # ── 5. Run grouper (zone + time-gap clustering with boss-kill join) ───────────
@@ -315,7 +340,12 @@ def compute_runs(path=CSV_PATH, gap_minutes=20):
     )
     enc_times["duration_s"] = (enc_times["end_dt"] - enc_times["start_dt"]).dt.total_seconds().clip(lower=0)
     enc_dmg = enc_df[enc_df["type"] == "damage"].groupby("combat_id")["effective_amount"].sum().rename("total_damage")
-    enc_heal = enc_df[enc_df["type"] == "heal"].groupby("combat_id")["effective_amount"].sum().rename("total_heal")
+    enc_heal = (
+        enc_df[enc_df["type"].isin(["heal", "absorb"])]
+        .groupby("combat_id")["effective_amount"]
+        .sum()
+        .rename("total_heal")
+    )
     # Zone per encounter — most frequent value in that combat
     enc_zone = enc_df.groupby("combat_id")["zone_name"].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else "")
     enc_zone_id = enc_df.groupby("combat_id")["zone_id"].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else 0)
@@ -403,4 +433,116 @@ def compute_runs(path=CSV_PATH, gap_minutes=20):
                 continue
 
     runs = runs.sort_values("run_id", ascending=False).reset_index(drop=True)
+
+    # ── Run-level role classification using healer sidecar ───────────────
+    # Load healer-identifying spells (sidecar may contain numeric ids and/or names)
+    try:
+        healer_sidecar = load_healer_spells()
+    except Exception:
+        healer_sidecar = {}
+
+    healer_ids = set()
+    healer_names = set()
+    for spec, spells in (healer_sidecar or {}).items():
+        if not isinstance(spells, list):
+            continue
+        for s in spells:
+            if isinstance(s, int):
+                healer_ids.add(int(s))
+            else:
+                healer_names.add(str(s).lower())
+
+    # If we have any healer indicators, stamp runs with role info.
+    if healer_ids or healer_names:
+        try:
+            # Map combat_id -> run_id from enc_summary
+            cid_to_run = enc_summary.set_index("combat_id")["run_id"].to_dict()
+            # Add run_id to per-event dataframe (enc_df is the per-event subset we used earlier)
+            per_event = enc_df.copy()
+            per_event["run_id"] = per_event["combat_id"].map(cid_to_run)
+
+            # Helper to decide if a run contains any healer spells
+            run_roles = {}
+            run_spec_map = {}
+            run_class_map = {}
+
+            # Reverse map: spell id/name -> spec for quick lookup
+            id_to_spec = {}
+            name_to_spec = {}
+            for spec, spells in (healer_sidecar or {}).items():
+                if not isinstance(spells, list):
+                    continue
+                for s in spells:
+                    if isinstance(s, int):
+                        id_to_spec.setdefault(int(s), set()).add(spec)
+                    else:
+                        name_to_spec.setdefault(str(s).lower(), set()).add(spec)
+
+            # Simple spec -> class mapping used for coloring in views
+            spec_to_class = {
+                "Mistweaver": "Monk",
+                "Restoration_Shaman": "Shaman",
+                "Restoration_Druid": "Druid",
+                "Holy_Paladin": "Paladin",
+                "Preservation_Evoker": "Evoker",
+                "Holy_Priest": "Priest",
+                "Discipline_Priest": "Priest",
+            }
+
+            for rid, grp in per_event.groupby("run_id"):
+                if pd.isna(rid):
+                    continue
+                try:
+                    # Iterate events in chronological order and short-circuit on
+                    # the first healer-identifying spell encountered.
+                    ordered = grp.sort_values("timestamp_dt") if "timestamp_dt" in grp.columns else grp
+                    found_spec = None
+                    for _, ev in ordered.iterrows():
+                        try:
+                            sid = ev.get("spell_id", None)
+                            # Prefer numeric id matches
+                            if sid is not None:
+                                try:
+                                    sid_int = int(sid)
+                                except Exception:
+                                    sid_int = None
+                                if sid_int and sid_int in id_to_spec:
+                                    # Pick deterministic spec from the set
+                                    specs = sorted(id_to_spec[sid_int])
+                                    found_spec = specs[0]
+                                    break
+                            # Fallback to name match
+                            sname = ev.get("spell_name", None)
+                            if sname:
+                                sname_l = str(sname).lower()
+                                if sname_l in name_to_spec:
+                                    specs = sorted(name_to_spec[sname_l])
+                                    found_spec = specs[0]
+                                    break
+                        except Exception:
+                            continue
+
+                    if found_spec:
+                        run_roles[int(rid)] = "Healer"
+                        run_spec_map[int(rid)] = found_spec
+                        run_class_map[int(rid)] = spec_to_class.get(found_spec, "")
+                    else:
+                        run_roles[int(rid)] = "DPS"
+                        run_spec_map[int(rid)] = ""
+                        run_class_map[int(rid)] = ""
+                except Exception:
+                    run_roles[int(rid)] = "DPS"
+                    run_spec_map[int(rid)] = ""
+                    run_class_map[int(rid)] = ""
+
+            runs["run_role"] = runs["run_id"].map(run_roles).fillna("DPS")
+            runs["is_healer_run"] = runs["run_role"] == "Healer"
+            runs["run_spec"] = runs["run_id"].map(run_spec_map).fillna("")
+            runs["run_class"] = runs["run_id"].map(run_class_map).fillna("")
+        except Exception:
+            runs["run_role"] = "DPS"
+            runs["is_healer_run"] = False
+    else:
+        runs["run_role"] = "DPS"
+        runs["is_healer_run"] = False
     return runs, enc_summary
