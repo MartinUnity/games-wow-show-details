@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from utils.data_engine import compute_runs, spell_aggregates
-from utils.data_io import _fmt_compact_amount, load_csv
+from utils.data_io import _fmt_compact_amount, load_csv, load_healer_spells
 
 
 def runs_view():
@@ -117,11 +117,66 @@ def runs_view():
                 player_short = ""
         except Exception:
             player_short = ""
+        # Determine run-level classification (DPS by default; Healer if any
+        # healer-unique spell appears in the run). This is a best-effort check
+        # that consults the raw parsed CSV; it prefers numeric spell_id matches
+        # but falls back to spell_name matching if needed.
+        run_role = "DPS"
+        run_spec = ""
+        run_class = ""  # e.g. 'Priest', 'Druid'
+        try:
+            healer_spells = load_healer_spells()
+            # build mapping spec -> set(ids or names)
+            spec_spellsets = {}
+            for spec, spells in healer_spells.items():
+                spec_spellsets[spec] = set(spells or [])
+
+            _raw = load_csv()
+            if _raw is not None and not _raw.empty:
+                _cids = enc_summary[enc_summary["run_id"] == int(r["run_id"])]["combat_id"].tolist()
+                if _cids:
+                    slice_df = _raw[_raw["combat_id"].isin(_cids)]
+                    if not slice_df.empty:
+                        # Prefer numeric spell_id column when present
+                        if "spell_id" in slice_df.columns:
+                            sids = set(int(x) for x in slice_df["spell_id"].dropna().astype(int).unique() if x)
+                            for spec, spells in spec_spellsets.items():
+                                # match numeric ids
+                                if any(isinstance(s, int) and s in sids for s in spells):
+                                    run_role = "Healer"
+                                    run_spec = spec
+                                    break
+                        # fallback: match spell_name textual
+                        if run_role == "DPS" and "spell_name" in slice_df.columns:
+                            names = set(x.strip().lower() for x in slice_df["spell_name"].dropna().unique())
+                            for spec, spells in spec_spellsets.items():
+                                if any(isinstance(s, str) and s.lower() in names for s in spells):
+                                    run_role = "Healer"
+                                    run_spec = spec
+                                    break
+        except Exception:
+            run_role = "DPS"
+
+        # Map spec -> class for coloring
+        spec_to_class = {
+            "Mistweaver": "Monk",
+            "Restoration_Shaman": "Shaman",
+            "Restoration_Druid": "Druid",
+            "Holy_Paladin": "Paladin",
+            "Preservation_Evoker": "Evoker",
+            "Holy_Priest": "Priest",
+            "Discipline_Priest": "Priest",
+        }
+        if run_spec:
+            run_class = spec_to_class.get(run_spec, "")
+
         table_rows.append(
             {
                 "run_id": int(r["run_id"]),
                 "Zone": str(r["zone_name"]),
                 "Player": player_short,
+                "PlayerClass": run_class,
+                "Role": run_role,
                 "Boss": str(r.get("boss_names", "")) or "",
                 "Date": r["start_dt"].strftime("%m/%d %H:%M") if pd.notna(r["start_dt"]) else "",
                 "Enc": int(r["n_encounters"]),
@@ -159,6 +214,25 @@ def runs_view():
             """
             )
 
+            # JS function to color Player name based on detected class
+            player_style_js = JsCode(
+                """
+            function(params) {
+              var cls = (params.data && params.data.PlayerClass) ? params.data.PlayerClass : '';
+              var map = {
+                'Druid': '#FF7C0A',
+                'Evoker': '#33937F',
+                'Monk': '#00FF98',
+                'Paladin': '#F48CBA',
+                'Priest': '#FFFFFF',
+                'Shaman': '#0070DD'
+              };
+              var c = map[cls] || '#9D89C9';
+              return {color: c, fontWeight: 'bold'};
+            }
+            """
+            )
+
             gb = GridOptionsBuilder.from_dataframe(table_df)
             gb.configure_column("run_id", header_name="#", width=40, minWidth=40, maxWidth=40, suppressSizeToFit=True)
             gb.configure_column(
@@ -171,8 +245,11 @@ def runs_view():
                 minWidth=80,
                 maxWidth=140,
                 suppressSizeToFit=True,
-                cellStyle={"color": "#9D89C9", "fontWeight": "bold"},
+                cellStyle=player_style_js,
             )
+            # role/class helper columns
+            gb.configure_column("Role", header_name="Role", width=90, minWidth=80, suppressSizeToFit=True)
+            gb.configure_column("PlayerClass", header_name="Class", hide=True)
             gb.configure_column("Boss", width=150, minWidth=100, cellStyle={"color": "#FFD700", "fontStyle": "italic"})
             gb.configure_column("Date", width=110, minWidth=90, maxWidth=120)
             gb.configure_column("Enc", width=55, minWidth=65, maxWidth=75, suppressSizeToFit=True)
