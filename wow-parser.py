@@ -17,6 +17,65 @@ from config import (
     LOG_DIR,
     MAX_CSV_BACKUPS,
 )
+from utils.data_io import load_healer_spells
+
+# Load healer identifying spells once at module import time. This is a mapping
+# spec -> list(spell_id or spell_name). Export/full-import runs will pick up
+# any changes to the sidecar file when the process restarts.
+HEALER_SPELLS = load_healer_spells()
+
+
+def _detect_and_assign_spec(parsed: dict, src_map: dict):
+    """Best-effort: assign source_spec and source_role to parsed row.
+
+    Rules:
+    - If we've already mapped this source in src_map, reuse it.
+    - Otherwise, check spell_id against HEALER_SPELLS (ints) and spell_name
+      against string entries (case-insensitive). If matched, set source_spec
+      to the spec key and source_role to 'Healer'.
+    - Default source_role remains 'DPS' unless discovered to be a healer.
+    """
+    src = parsed.get("source", "")
+    if not src:
+        return
+    # reuse cached mapping
+    if src in src_map:
+        parsed["source_spec"] = src_map[src]
+        parsed["source_role"] = "Healer" if src_map[src] else "DPS"
+        return
+
+    # attempt detection
+    sid = parsed.get("spell_id", 0)
+    sname = str(parsed.get("spell_name", "") or "")
+    found_spec = ""
+    for spec, spells in HEALER_SPELLS.items():
+        if not spells:
+            continue
+        for sp in spells:
+            try:
+                # numeric match
+                if isinstance(sp, int) and sid and int(sp) == int(sid):
+                    found_spec = spec
+                    break
+                # name match (case-insensitive)
+                if isinstance(sp, str) and sp.lower() == sname.lower():
+                    found_spec = spec
+                    break
+            except Exception:
+                continue
+        if found_spec:
+            break
+
+    if found_spec:
+        src_map[src] = found_spec
+        parsed["source_spec"] = found_spec
+        parsed["source_role"] = "Healer"
+    else:
+        # cache negative result to avoid re-checking repeatedly
+        src_map[src] = ""
+        parsed["source_spec"] = ""
+        parsed["source_role"] = "DPS"
+
 
 # Alias kept so existing references inside this file don't need touching.
 OUTPUT_CSV = CSV_PATH
@@ -146,6 +205,9 @@ def parse_combat_line(line, current_char_name):
         "amount": 0,
         "effective_amount": 0,
         "type": "other",
+        "spell_id": 0,
+        "source_spec": "",
+        "source_role": "DPS",
     }
 
     # Helper to parse integers and handle 'nil'
@@ -162,6 +224,12 @@ def parse_combat_line(line, current_char_name):
         data["spell_name"] = (
             rest_parts[9].replace('"', "") if len(rest_parts) > 9 else "Unknown"
         )
+        # spell id (best-effort)
+        try:
+            sid = int(rest_parts[8]) if len(rest_parts) > 8 and str(rest_parts[8]).isdigit() else 0
+        except Exception:
+            sid = 0
+        data["spell_id"] = sid
         # Destination/target name is typically at index 5
         if len(rest_parts) > 5:
             data["target"] = rest_parts[5].replace('"', "")
@@ -176,6 +244,11 @@ def parse_combat_line(line, current_char_name):
         data["spell_name"] = (
             rest_parts[9].replace('"', "") if len(rest_parts) > 9 else "Unknown"
         )
+        try:
+            sid = int(rest_parts[8]) if len(rest_parts) > 8 and str(rest_parts[8]).isdigit() else 0
+        except Exception:
+            sid = 0
+        data["spell_id"] = sid
         # Destination/target name is typically at index 5
         if len(rest_parts) > 5:
             data["target"] = rest_parts[5].replace('"', "")
@@ -189,6 +262,7 @@ def parse_combat_line(line, current_char_name):
     elif event_type == "SWING_DAMAGE" and len(rest_parts) >= 1:
         data["type"] = "damage"
         data["spell_name"] = "Melee"
+        data["spell_id"] = 0
         if len(rest_parts) > 5:
             data["target"] = rest_parts[5].replace('"', "")
         amt = to_int(rest_parts[-8]) if len(rest_parts) >= 8 else to_int(rest_parts[-1])
@@ -702,6 +776,10 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
+        # New columns for class/spec detection
+        "spell_id",
+        "source_spec",
+        "source_role",
     ]
 
     # Pass 1 – detect encounter intervals using the full (unfiltered) log.
@@ -710,6 +788,7 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
     print(f"  Detected {len(encounters)} encounter(s).")
 
     # Pass 2 – extract player events and stamp each with the right combat_id.
+    src_map = {}
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(header)
@@ -732,6 +811,13 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
 
                 cid, zone_id, zone_name = assign_encounter_info(dt, encounters)
 
+                # detect and assign spec/role best-effort
+                try:
+                    _detect_and_assign_spec(parsed_data, src_map)
+                except Exception:
+                    # non-fatal
+                    pass
+
                 writer.writerow(
                     [
                         cid,
@@ -745,6 +831,9 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
                         parsed_data.get("type", ""),
                         zone_id,
                         zone_name,
+                        parsed_data.get("spell_id", 0),
+                        parsed_data.get("source_spec", ""),
+                        parsed_data.get("source_role", "DPS"),
                     ]
                 )
 
@@ -830,6 +919,10 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
+        # New columns for class/spec detection
+        "spell_id",
+        "source_spec",
+        "source_role",
     ]
 
     # Pass 1 – stream all files through the encounter detector as one sequence.
@@ -845,6 +938,7 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
     print(f"  Detected {len(encounters)} encounter(s) across {len(filepaths)} file(s).")
 
     # Pass 2 – extract player events and stamp each with the right combat_id.
+    src_map = {}
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(header)
@@ -869,6 +963,12 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
 
                         cid, zone_id, zone_name = assign_encounter_info(dt, encounters)
 
+                        # detect and assign spec/role best-effort
+                        try:
+                            _detect_and_assign_spec(parsed_data, src_map)
+                        except Exception:
+                            pass
+
                         writer.writerow(
                             [
                                 cid,
@@ -882,6 +982,9 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
                                 parsed_data.get("type", ""),
                                 zone_id,
                                 zone_name,
+                                parsed_data.get("spell_id", 0),
+                                parsed_data.get("source_spec", ""),
+                                parsed_data.get("source_role", "DPS"),
                             ]
                         )
             except Exception:
@@ -932,6 +1035,10 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
+        # New columns for class/spec detection
+        "spell_id",
+        "source_spec",
+        "source_role",
     ]
 
     # Continue combat_id numbering from what is already in the CSV.
@@ -994,6 +1101,9 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                     parsed.get("type", ""),
                     encounter_zone_id,
                     encounter_zone_name,
+                    parsed.get("spell_id", 0),
+                    parsed.get("source_spec", ""),
+                    parsed.get("source_role", "DPS"),
                 ]
             )
         # Drop out-of-combat rows (cid=0) — they carry no combat-meter value.
