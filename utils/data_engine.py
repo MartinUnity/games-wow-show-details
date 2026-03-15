@@ -10,7 +10,7 @@ they do not trigger page rendering.
 import pandas as pd
 import streamlit as st
 
-from utils.data_io import CSV_PATH, load_boss_kills, load_csv
+from utils.data_io import CSV_PATH, load_boss_kills, load_csv, load_healer_spells
 
 # ── 1. Time-series builder ────────────────────────────────────────────────────
 
@@ -433,4 +433,116 @@ def compute_runs(path=CSV_PATH, gap_minutes=20):
                 continue
 
     runs = runs.sort_values("run_id", ascending=False).reset_index(drop=True)
+
+    # ── Run-level role classification using healer sidecar ───────────────
+    # Load healer-identifying spells (sidecar may contain numeric ids and/or names)
+    try:
+        healer_sidecar = load_healer_spells()
+    except Exception:
+        healer_sidecar = {}
+
+    healer_ids = set()
+    healer_names = set()
+    for spec, spells in (healer_sidecar or {}).items():
+        if not isinstance(spells, list):
+            continue
+        for s in spells:
+            if isinstance(s, int):
+                healer_ids.add(int(s))
+            else:
+                healer_names.add(str(s).lower())
+
+    # If we have any healer indicators, stamp runs with role info.
+    if healer_ids or healer_names:
+        try:
+            # Map combat_id -> run_id from enc_summary
+            cid_to_run = enc_summary.set_index("combat_id")["run_id"].to_dict()
+            # Add run_id to per-event dataframe (enc_df is the per-event subset we used earlier)
+            per_event = enc_df.copy()
+            per_event["run_id"] = per_event["combat_id"].map(cid_to_run)
+
+            # Helper to decide if a run contains any healer spells
+            run_roles = {}
+            run_spec_map = {}
+            run_class_map = {}
+
+            # Reverse map: spell id/name -> spec for quick lookup
+            id_to_spec = {}
+            name_to_spec = {}
+            for spec, spells in (healer_sidecar or {}).items():
+                if not isinstance(spells, list):
+                    continue
+                for s in spells:
+                    if isinstance(s, int):
+                        id_to_spec.setdefault(int(s), set()).add(spec)
+                    else:
+                        name_to_spec.setdefault(str(s).lower(), set()).add(spec)
+
+            # Simple spec -> class mapping used for coloring in views
+            spec_to_class = {
+                "Mistweaver": "Monk",
+                "Restoration_Shaman": "Shaman",
+                "Restoration_Druid": "Druid",
+                "Holy_Paladin": "Paladin",
+                "Preservation_Evoker": "Evoker",
+                "Holy_Priest": "Priest",
+                "Discipline_Priest": "Priest",
+            }
+
+            for rid, grp in per_event.groupby("run_id"):
+                if pd.isna(rid):
+                    continue
+                try:
+                    # Iterate events in chronological order and short-circuit on
+                    # the first healer-identifying spell encountered.
+                    ordered = grp.sort_values("timestamp_dt") if "timestamp_dt" in grp.columns else grp
+                    found_spec = None
+                    for _, ev in ordered.iterrows():
+                        try:
+                            sid = ev.get("spell_id", None)
+                            # Prefer numeric id matches
+                            if sid is not None:
+                                try:
+                                    sid_int = int(sid)
+                                except Exception:
+                                    sid_int = None
+                                if sid_int and sid_int in id_to_spec:
+                                    # Pick deterministic spec from the set
+                                    specs = sorted(id_to_spec[sid_int])
+                                    found_spec = specs[0]
+                                    break
+                            # Fallback to name match
+                            sname = ev.get("spell_name", None)
+                            if sname:
+                                sname_l = str(sname).lower()
+                                if sname_l in name_to_spec:
+                                    specs = sorted(name_to_spec[sname_l])
+                                    found_spec = specs[0]
+                                    break
+                        except Exception:
+                            continue
+
+                    if found_spec:
+                        run_roles[int(rid)] = "Healer"
+                        run_spec_map[int(rid)] = found_spec
+                        run_class_map[int(rid)] = spec_to_class.get(found_spec, "")
+                    else:
+                        run_roles[int(rid)] = "DPS"
+                        run_spec_map[int(rid)] = ""
+                        run_class_map[int(rid)] = ""
+                except Exception:
+                    run_roles[int(rid)] = "DPS"
+                    run_spec_map[int(rid)] = ""
+                    run_class_map[int(rid)] = ""
+
+            runs["run_role"] = runs["run_id"].map(run_roles).fillna("DPS")
+            runs["is_healer_run"] = runs["run_role"] == "Healer"
+            runs["run_spec"] = runs["run_id"].map(run_spec_map).fillna("")
+            runs["run_class"] = runs["run_id"].map(run_class_map).fillna("")
+        except Exception:
+            runs["run_role"] = "DPS"
+            runs["is_healer_run"] = False
+    else:
+        runs["run_role"] = "DPS"
+        runs["is_healer_run"] = False
     return runs, enc_summary

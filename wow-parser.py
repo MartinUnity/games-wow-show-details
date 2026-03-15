@@ -17,7 +17,7 @@ from config import (
     LOG_DIR,
     MAX_CSV_BACKUPS,
 )
-# Note: CSV now stores only spell_id; source_spec/source_role are not persisted
+# Note: CSV stores only `spell_id`; `source_spec`/`source_role` are not persisted
 
 
 # Alias kept so existing references inside this file don't need touching.
@@ -149,8 +149,6 @@ def parse_combat_line(line, current_char_name):
         "effective_amount": 0,
         "type": "other",
         "spell_id": 0,
-        "source_spec": "",
-        "source_role": "DPS",
     }
 
     # Helper to parse integers and handle 'nil'
@@ -761,10 +759,8 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
-        # New columns for class/spec detection
+        # New column for class/spec detection
         "spell_id",
-        "source_spec",
-        "source_role",
     ]
 
     # Pass 1 – detect encounter intervals using the full (unfiltered) log.
@@ -814,8 +810,6 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
                         zone_id,
                         zone_name,
                         parsed_data.get("spell_id", 0),
-                        parsed_data.get("source_spec", ""),
-                        parsed_data.get("source_role", "DPS"),
                     ]
                 )
 
@@ -901,10 +895,8 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
-        # New columns for class/spec detection
+        # New column for class/spec detection
         "spell_id",
-        "source_spec",
-        "source_role",
     ]
 
     # Pass 1 – stream all files through the encounter detector as one sequence.
@@ -962,8 +954,6 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
                                 zone_id,
                                 zone_name,
                                 parsed_data.get("spell_id", 0),
-                                parsed_data.get("source_spec", ""),
-                                parsed_data.get("source_role", "DPS"),
                             ]
                         )
             except Exception:
@@ -1014,10 +1004,8 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
         "type",
         "zone_id",
         "zone_name",
-        # New columns for class/spec detection
+        # New column for class/spec detection
         "spell_id",
-        "source_spec",
-        "source_role",
     ]
 
     # Continue combat_id numbering from what is already in the CSV.
@@ -1067,24 +1055,22 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                 cid = combat_id
             else:
                 cid = 0
-            rows.append(
-                [
-                    cid,
-                    parsed.get("timestamp", ""),
-                    parsed.get("event", ""),
-                    parsed.get("source", ""),
-                    parsed.get("target", ""),
-                    parsed.get("spell_name", ""),
-                    parsed.get("amount", 0),
-                    parsed.get("effective_amount", 0),
-                    parsed.get("type", ""),
-                    encounter_zone_id,
-                    encounter_zone_name,
-                    parsed.get("spell_id", 0),
-                    parsed.get("source_spec", ""),
-                    parsed.get("source_role", "DPS"),
-                ]
-            )
+                rows.append(
+                    [
+                        cid,
+                        parsed.get("timestamp", ""),
+                        parsed.get("event", ""),
+                        parsed.get("source", ""),
+                        parsed.get("target", ""),
+                        parsed.get("spell_name", ""),
+                        parsed.get("amount", 0),
+                        parsed.get("effective_amount", 0),
+                        parsed.get("type", ""),
+                        encounter_zone_id,
+                        encounter_zone_name,
+                        parsed.get("spell_id", 0),
+                    ]
+                )
         # Drop out-of-combat rows (cid=0) — they carry no combat-meter value.
         rows = [r for r in rows if r[0] != 0]
         if rows:

@@ -117,57 +117,25 @@ def runs_view():
                 player_short = ""
         except Exception:
             player_short = ""
-        # Determine run-level classification (DPS by default; Healer if any
-        # healer-unique spell appears in the run). This is a best-effort check
-        # that consults the raw parsed CSV; it prefers numeric spell_id matches
-        # but falls back to spell_name matching if needed.
-        run_role = "DPS"
-        run_spec = ""
-        run_class = ""  # e.g. 'Priest', 'Druid'
-        try:
-            healer_spells = load_healer_spells()
-            # build mapping spec -> set(ids or names)
-            spec_spellsets = {}
-            for spec, spells in healer_spells.items():
-                spec_spellsets[spec] = set(spells or [])
+        # Prefer precomputed run_role from compute_runs() (fast). Fall back to
+        # default DPS when not present. compute_runs() will already have
+        # scanned the sidecar and CSV to stamp `run_role` and `is_healer_run`.
+        run_role = str(r.get("run_role", "DPS")) if "run_role" in r else "DPS"
+        run_spec = str(r.get("run_spec", "")) if "run_spec" in r else ""
+        run_class = str(r.get("run_class", "")) if "run_class" in r else ""
 
-            _raw = load_csv()
-            if _raw is not None and not _raw.empty:
-                _cids = enc_summary[enc_summary["run_id"] == int(r["run_id"])]["combat_id"].tolist()
-                if _cids:
-                    slice_df = _raw[_raw["combat_id"].isin(_cids)]
-                    if not slice_df.empty:
-                        # Prefer numeric spell_id column when present
-                        if "spell_id" in slice_df.columns:
-                            sids = set(int(x) for x in slice_df["spell_id"].dropna().astype(int).unique() if x)
-                            for spec, spells in spec_spellsets.items():
-                                # match numeric ids
-                                if any(isinstance(s, int) and s in sids for s in spells):
-                                    run_role = "Healer"
-                                    run_spec = spec
-                                    break
-                        # fallback: match spell_name textual
-                        if run_role == "DPS" and "spell_name" in slice_df.columns:
-                            names = set(x.strip().lower() for x in slice_df["spell_name"].dropna().unique())
-                            for spec, spells in spec_spellsets.items():
-                                if any(isinstance(s, str) and s.lower() in names for s in spells):
-                                    run_role = "Healer"
-                                    run_spec = spec
-                                    break
-        except Exception:
-            run_role = "DPS"
-
-        # Map spec -> class for coloring
-        spec_to_class = {
-            "Mistweaver": "Monk",
-            "Restoration_Shaman": "Shaman",
-            "Restoration_Druid": "Druid",
-            "Holy_Paladin": "Paladin",
-            "Preservation_Evoker": "Evoker",
-            "Holy_Priest": "Priest",
-            "Discipline_Priest": "Priest",
-        }
-        if run_spec:
+        # run_spec/run_class are precomputed in compute_runs(); fall back to
+        # deriving class from spec if present for older runs.
+        if not run_class and run_spec:
+            spec_to_class = {
+                "Mistweaver": "Monk",
+                "Restoration_Shaman": "Shaman",
+                "Restoration_Druid": "Druid",
+                "Holy_Paladin": "Paladin",
+                "Preservation_Evoker": "Evoker",
+                "Holy_Priest": "Priest",
+                "Discipline_Priest": "Priest",
+            }
             run_class = spec_to_class.get(run_spec, "")
 
         table_rows.append(
