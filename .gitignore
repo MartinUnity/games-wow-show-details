@@ -8,3 +8,6 @@ games-wow-show-details.code-workspace
 sites/
 htmx/
 *.txt.gz
+
+# Ignore archived combat logs stored under data/logs
+data/logs/*.txt.gz
