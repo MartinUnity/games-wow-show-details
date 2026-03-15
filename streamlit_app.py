@@ -59,6 +59,8 @@ def main():
     )
 
     # --- View selector (top of sidebar) ---
+    # Use an explicit session_state key so we can programmatically switch the
+    # selected view when a query param (e.g. ?view=Combat%20Viewer) is present.
     view = st.sidebar.radio(
         "View",
         options=[
@@ -69,6 +71,7 @@ def main():
             "Character Comparison",
         ],
         index=0,
+        key="app_view",
     )
 
     # --- Live-follow controls (top of sidebar) ---
@@ -458,6 +461,12 @@ def main():
     # Respect `?combat=<id>` and `?num_combats=` query params early
     try:
         params = st.experimental_get_query_params()
+        # Allow navigation via `?view=...` to programmatically switch pages.
+        if "view" in params and params["view"]:
+            try:
+                st.session_state["app_view"] = params["view"][0]
+            except Exception:
+                pass
         if "combat" in params and params["combat"]:
             try:
                 st.session_state["combat_select"] = int(params["combat"][0])
