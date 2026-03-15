@@ -17,64 +17,7 @@ from config import (
     LOG_DIR,
     MAX_CSV_BACKUPS,
 )
-from utils.data_io import load_healer_spells
-
-# Load healer identifying spells once at module import time. This is a mapping
-# spec -> list(spell_id or spell_name). Export/full-import runs will pick up
-# any changes to the sidecar file when the process restarts.
-HEALER_SPELLS = load_healer_spells()
-
-
-def _detect_and_assign_spec(parsed: dict, src_map: dict):
-    """Best-effort: assign source_spec and source_role to parsed row.
-
-    Rules:
-    - If we've already mapped this source in src_map, reuse it.
-    - Otherwise, check spell_id against HEALER_SPELLS (ints) and spell_name
-      against string entries (case-insensitive). If matched, set source_spec
-      to the spec key and source_role to 'Healer'.
-    - Default source_role remains 'DPS' unless discovered to be a healer.
-    """
-    src = parsed.get("source", "")
-    if not src:
-        return
-    # reuse cached mapping
-    if src in src_map:
-        parsed["source_spec"] = src_map[src]
-        parsed["source_role"] = "Healer" if src_map[src] else "DPS"
-        return
-
-    # attempt detection
-    sid = parsed.get("spell_id", 0)
-    sname = str(parsed.get("spell_name", "") or "")
-    found_spec = ""
-    for spec, spells in HEALER_SPELLS.items():
-        if not spells:
-            continue
-        for sp in spells:
-            try:
-                # numeric match
-                if isinstance(sp, int) and sid and int(sp) == int(sid):
-                    found_spec = spec
-                    break
-                # name match (case-insensitive)
-                if isinstance(sp, str) and sp.lower() == sname.lower():
-                    found_spec = spec
-                    break
-            except Exception:
-                continue
-        if found_spec:
-            break
-
-    if found_spec:
-        src_map[src] = found_spec
-        parsed["source_spec"] = found_spec
-        parsed["source_role"] = "Healer"
-    else:
-        # cache negative result to avoid re-checking repeatedly
-        src_map[src] = ""
-        parsed["source_spec"] = ""
-        parsed["source_role"] = "DPS"
+# Note: CSV now stores only spell_id; source_spec/source_role are not persisted
 
 
 # Alias kept so existing references inside this file don't need touching.
@@ -853,12 +796,9 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
 
                 cid, zone_id, zone_name = assign_encounter_info(dt, encounters)
 
-                # detect and assign spec/role best-effort
-                try:
-                    _detect_and_assign_spec(parsed_data, src_map)
-                except Exception:
-                    # non-fatal
-                    pass
+                # Previously we used parser-side spec tagging; to keep schema
+                # stable we now only persist spell_id. UI layers perform run-level
+                # classification based on healer_spells sidecar when rendering.
 
                 writer.writerow(
                     [
@@ -1005,11 +945,8 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
 
                         cid, zone_id, zone_name = assign_encounter_info(dt, encounters)
 
-                        # detect and assign spec/role best-effort
-                        try:
-                            _detect_and_assign_spec(parsed_data, src_map)
-                        except Exception:
-                            pass
+                        # Detection no longer performed at parse time; renderer will
+                        # classify runs based on spell_id and the sidecar heuristics.
 
                         writer.writerow(
                             [
