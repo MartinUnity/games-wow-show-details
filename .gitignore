@@ -1,6 +1,9 @@
 __pycache__
 testdata/
 parsed_combat_data.csv.bak*
+parsed_combat_data.csv
+data/sidecar/boss_kills.jsonl
+data/sidecar/hidden_combats.json
 games-wow-show-details.code-workspace
 sites/
 htmx/

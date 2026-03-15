@@ -8,9 +8,14 @@ Both wow-parser.py and the Streamlit app (via utils/) import from here.
 import os
 
 # ── WoW combat log source directory ──────────────────────────────────────────
-LOG_DIR = (
-    "/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx"
-    "/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
+# Allow overriding the local WoW Logs path via the environment for privacy and
+# portability. If not set, fall back to the previous developer-local default.
+LOG_DIR = os.environ.get(
+    "WOW_LOG_DIR",
+    (
+        "/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx"
+        "/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
+    ),
 )
 
 # ── Local data directory for archived (compressed) log files ─────────────────
