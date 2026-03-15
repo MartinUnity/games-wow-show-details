@@ -24,7 +24,7 @@ games-wow-show-details/
 ### Prerequisites
 - Python 3.8+
 - Steam World of Warcraft installed (for combat log access)
-- Write access to: `/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs`
+- Write access to your WoW Logs directory (see Environment configuration below)
 
 ### Installation
 
@@ -113,20 +113,24 @@ Key configuration locations:
 - `config.py` → `LOG_DIR` is now environment-configurable via `WOW_LOG_DIR` (preferred)
 - `streamlit_app.py` → various file paths (CSV, hidden combats, boss kills)
 
-Default combat log directory (developer fallback):
-```
-/home/martin/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs
-```
+Environment configuration
 
-Environment configuration:
+Set `WOW_LOG_DIR` to point at your World of Warcraft Logs folder so the parser can find the combat logs. Two common examples:
 
-1. Export your WoW logs directory (recommended):
+Linux (bash):
 
 ```bash
 export WOW_LOG_DIR="$HOME/.local/share/Steam/steamapps/compatdata/4076040504/pfx/drive_c/Program Files (x86)/World of Warcraft/_retail_/Logs"
 ```
 
-2. Run the parser or UI as usual:
+Windows (PowerShell):
+
+```powershell
+$env:WOW_LOG_DIR = 'C:\Program Files (x86)\World of Warcraft\_retail_\Logs'
+# or set permanently via System > Advanced > Environment Variables
+```
+
+Then run the parser / UI as usual:
 
 ```bash
 python wow-parser.py --full-import
