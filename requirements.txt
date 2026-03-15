@@ -3,3 +3,8 @@ pandas
 streamlit-autorefresh
 streamlit-aggrid
 Pillow
+Flask
+black
+ruff
+isort
+flake8
