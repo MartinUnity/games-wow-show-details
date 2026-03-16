@@ -29,11 +29,54 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
     # Show combat header with first target name if available
     combat_df = df[df["combat_id"] == combat_id].sort_values("timestamp_dt")
 
+    target_name = ""
     if "target" in combat_df.columns:
         try:
-            nonempty = combat_df[~combat_df["target"].isnull() & (combat_df["target"] != "")]
-            if not nonempty.empty:
-                target_name = str(nonempty.iloc[0]["target"]).strip()
+            # Prefer the most frequent non-player damage target (mirrors compute_runs()).
+            try:
+                player_name = (
+                    combat_df["source"].mode().iloc[0] if not combat_df["source"].mode().empty else None
+                )
+            except Exception:
+                player_name = None
+
+            dmg_sub = combat_df[(combat_df["type"] == "damage") & combat_df["target"].notna() & (combat_df["target"] != "")]
+            if player_name is not None:
+                try:
+                    dmg_sub = dmg_sub[dmg_sub["target"] != player_name]
+                except Exception:
+                    pass
+
+            if not dmg_sub.empty:
+                try:
+                    vc = dmg_sub["target"].value_counts()
+                    if not vc.empty:
+                        target_name = str(vc.index[0])
+                except Exception:
+                    target_name = ""
+
+            # Fallback: longest-lived non-player target
+            if not target_name:
+                try:
+                    sub = combat_df[combat_df["target"].notna() & (combat_df["target"] != "")]
+                    if player_name is not None:
+                        sub = sub[sub["target"] != player_name]
+                    durations = {}
+                    for t, grp in sub.groupby("target"):
+                        s = grp["timestamp_dt"].min()
+                        e = grp["timestamp_dt"].max()
+                        if pd.notna(s) and pd.notna(e) and e > s:
+                            durations[t] = (e - s).total_seconds()
+                    if durations:
+                        target_name = str(max(durations, key=durations.get))
+                except Exception:
+                    pass
+
+            # Last resort: first non-empty target
+            if not target_name:
+                nonempty = combat_df[~combat_df["target"].isnull() & (combat_df["target"] != "")]
+                if not nonempty.empty:
+                    target_name = str(nonempty.iloc[0]["target"]).strip()
         except Exception:
             target_name = ""
     else:
