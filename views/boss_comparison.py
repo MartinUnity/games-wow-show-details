@@ -338,11 +338,6 @@ def _render_side(
             & (sub["spell_name"] != "")
             & sub["type"].isin(["damage", "heal", "absorb"])
         ].copy()
-        st.caption(
-            f"DEBUG: cid={cid} sub_rows={len(sub)} tl_rows={len(tl_df)} "
-            f"unique_spells={tl_df['spell_name'].nunique() if not tl_df.empty else 0} "
-            f"tl_spells_count={len(tl_spells)}"
-        )
         if not tl_df.empty and pd.notna(start_dt):
             tl_df["elapsed_s"] = (tl_df["timestamp_dt"] - start_dt).dt.total_seconds()
             # Filter to the caller-supplied spell union so both sides show the same rows
@@ -614,7 +609,6 @@ def boss_comparison_view() -> None:
     # share the same Y rows (same height, same spell ordering).
     TL_ROW_PX = 30
     TL_MIN_H = 200
-    TL_MAX_SPELLS = 20
 
     def _top_spells(sub: pd.DataFrame) -> list:
         tl = sub[
@@ -622,13 +616,17 @@ def boss_comparison_view() -> None:
             & (sub["spell_name"] != "")
             & sub["type"].isin(["damage", "heal", "absorb"])
         ]
-        return tl["spell_name"].value_counts().head(TL_MAX_SPELLS).index.tolist()
+        return tl["spell_name"].value_counts().index.tolist()
 
     left_spells = _top_spells(left_sub)
     right_spells = _top_spells(right_sub)
-    # Union, preserving left order first then any right-only extras
-    tl_spells: list = left_spells + [s for s in right_spells if s not in left_spells]
-    tl_spells = tl_spells[:TL_MAX_SPELLS]
+    # Full union: left order first, then any right-only extras — no cap
+    seen: set = set()
+    tl_spells: list = []
+    for s in left_spells + right_spells:
+        if s not in seen:
+            tl_spells.append(s)
+            seen.add(s)
     tl_height = max(TL_MIN_H, TL_ROW_PX * len(tl_spells) + 60)
 
     col_left, col_right = st.columns(2)
