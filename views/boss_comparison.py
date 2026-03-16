@@ -177,13 +177,19 @@ def _render_side(
     heal_table_h: int,
     dmg_chart_h: int,
     heal_chart_h: int,
+    tl_spells: list,
+    tl_height: int,
     resample_s: int = 2,
 ) -> None:
-    """Render headline metrics + ability breakdown + time-series for one combat_id.
+    """Render headline metrics + ability breakdown + time-series + rotation timeline.
 
     The caller pre-computes *dmg_agg* / *heal_agg* for both sides and passes
     uniform fixed pixel heights so the two columns stay vertically aligned
     regardless of how many rows each side has.
+
+    *tl_spells* is the union of spell names across both sides (caller-computed),
+    and *tl_height* is the shared fixed height for the rotation swimlane chart —
+    both ensure the timelines stay level with each other.
     """
     sub = df_raw[df_raw["combat_id"] == cid].sort_values("timestamp_dt")
 
@@ -322,6 +328,64 @@ def _render_side(
             )
     except Exception:
         st.caption("Time-series unavailable.")
+
+    # Rotation swimlane (elapsed_s from combat start so both sides share the same X scale)
+    st.markdown("**Rotation timeline**")
+    try:
+        start_dt = sub["timestamp_dt"].min()
+        tl_df = sub[
+            sub["spell_name"].notna()
+            & (sub["spell_name"] != "")
+            & sub["type"].isin(["damage", "heal", "absorb"])
+        ].copy()
+        if not tl_df.empty and pd.notna(start_dt):
+            tl_df["elapsed_s"] = (tl_df["timestamp_dt"] - start_dt).dt.total_seconds()
+            # Filter to the caller-supplied spell union so both sides show the same rows
+            if tl_spells:
+                tl_df = tl_df[tl_df["spell_name"].isin(tl_spells)]
+            if not tl_df.empty:
+                tl_chart = (
+                    alt.Chart(tl_df)
+                    .mark_circle(opacity=0.8)
+                    .encode(
+                        x=alt.X("elapsed_s:Q", title="Elapsed (s)"),
+                        y=alt.Y(
+                            "spell_name:N",
+                            title="",
+                            sort=tl_spells if tl_spells else alt.EncodingSortField(field="elapsed_s", op="min"),
+                        ),
+                        color=alt.Color(
+                            "type:N",
+                            scale=alt.Scale(
+                                domain=["damage", "heal", "absorb"],
+                                range=["#7CFC00", "#00CED1", "#4169E1"],
+                            ),
+                            legend=alt.Legend(title="Type"),
+                        ),
+                        size=alt.Size(
+                            "effective_amount:Q",
+                            scale=alt.Scale(range=[40, 400]),
+                            legend=None,
+                        ),
+                        tooltip=[
+                            alt.Tooltip("spell_name:N", title="Spell"),
+                            alt.Tooltip("elapsed_s:Q", format=".2f", title="At (s)"),
+                            alt.Tooltip("effective_amount:Q", format=",", title="Amount"),
+                            alt.Tooltip("type:N", title="Type"),
+                        ],
+                    )
+                    .properties(height=tl_height)
+                )
+                st.altair_chart(tl_chart, use_container_width=True)
+            else:
+                st.caption("No spells to show in rotation.")
+                st.markdown(f"<div style='height:{tl_height}px'></div>", unsafe_allow_html=True)
+        else:
+            st.caption("No timeline data available.")
+            st.markdown(f"<div style='height:{tl_height}px'></div>", unsafe_allow_html=True)
+    except Exception:
+        st.caption("Rotation timeline unavailable.")
+        st.markdown(f"<div style='height:{tl_height}px'></div>", unsafe_allow_html=True)
 
 
 # ── Public view ───────────────────────────────────────────────────────────────
@@ -506,6 +570,28 @@ def boss_comparison_view() -> None:
     dmg_chart_h = max(MIN_CHART_H, BAR_PX * max_dmg_rows)
     heal_chart_h = max(MIN_CHART_H, BAR_PX * max_heal_rows)
 
+    # ── Pre-compute rotation timeline parameters ──────────────────────────
+    # Build the union of top-20 spells across both sides so both swimlanes
+    # share the same Y rows (same height, same spell ordering).
+    TL_ROW_PX = 30
+    TL_MIN_H = 200
+    TL_MAX_SPELLS = 20
+
+    def _top_spells(sub: pd.DataFrame) -> list:
+        tl = sub[
+            sub["spell_name"].notna()
+            & (sub["spell_name"] != "")
+            & sub["type"].isin(["damage", "heal", "absorb"])
+        ]
+        return tl["spell_name"].value_counts().head(TL_MAX_SPELLS).index.tolist()
+
+    left_spells = _top_spells(left_sub)
+    right_spells = _top_spells(right_sub)
+    # Union, preserving left order first then any right-only extras
+    tl_spells: list = left_spells + [s for s in right_spells if s not in left_spells]
+    tl_spells = tl_spells[:TL_MAX_SPELLS]
+    tl_height = max(TL_MIN_H, TL_ROW_PX * len(tl_spells) + 60)
+
     col_left, col_right = st.columns(2)
     with col_left:
         _render_side(
@@ -513,6 +599,7 @@ def boss_comparison_view() -> None:
             dmg_agg=left_dmg_agg, heal_agg=left_heal_agg,
             dmg_table_h=dmg_table_h, heal_table_h=heal_table_h,
             dmg_chart_h=dmg_chart_h, heal_chart_h=heal_chart_h,
+            tl_spells=tl_spells, tl_height=tl_height,
             resample_s=resample_s,
         )
     with col_right:
@@ -521,5 +608,70 @@ def boss_comparison_view() -> None:
             dmg_agg=right_dmg_agg, heal_agg=right_heal_agg,
             dmg_table_h=dmg_table_h, heal_table_h=heal_table_h,
             dmg_chart_h=dmg_chart_h, heal_chart_h=heal_chart_h,
+            tl_spells=tl_spells, tl_height=tl_height,
             resample_s=resample_s,
         )
+
+    # ── Overlaid full-width rotation timeline ─────────────────────────────
+    # Both combats on the same elapsed_s X axis, distinguished by a "Side"
+    # column (Left / Right) mapped to different marker shapes and colours.
+    # This is the most useful view for fine-grained per-second comparison.
+    if tl_spells:
+        st.markdown("---")
+        st.subheader("Rotation comparison (overlaid)")
+        st.caption(
+            "Both runs on the same elapsed-time axis. "
+            "Left run = filled circle · Right run = cross. "
+            "Hover for spell, timing, and amount."
+        )
+        try:
+            overlay_rows = []
+            for side_label, cid, sub in [("Left", left_cid, left_sub), ("Right", right_cid, right_sub)]:
+                start_dt = sub["timestamp_dt"].min()
+                tl = sub[
+                    sub["spell_name"].notna()
+                    & (sub["spell_name"] != "")
+                    & sub["type"].isin(["damage", "heal", "absorb"])
+                    & sub["spell_name"].isin(tl_spells)
+                ].copy()
+                if tl.empty or pd.isna(start_dt):
+                    continue
+                tl["elapsed_s"] = (tl["timestamp_dt"] - start_dt).dt.total_seconds()
+                tl["Side"] = side_label
+                overlay_rows.append(tl)
+
+            if overlay_rows:
+                ov_df = pd.concat(overlay_rows, ignore_index=True)
+                shape_scale = alt.Scale(domain=["Left", "Right"], range=["circle", "cross"])
+                color_scale_ov = alt.Scale(domain=["Left", "Right"], range=["#7CFC00", "#FF8C00"])
+                ov_chart = (
+                    alt.Chart(ov_df)
+                    .mark_point(filled=True, opacity=0.75, size=80)
+                    .encode(
+                        x=alt.X("elapsed_s:Q", title="Elapsed (s)"),
+                        y=alt.Y(
+                            "spell_name:N",
+                            title="",
+                            sort=tl_spells,
+                            axis=alt.Axis(labelLimit=300),
+                        ),
+                        color=alt.Color("Side:N", scale=color_scale_ov, legend=alt.Legend(title="Run")),
+                        shape=alt.Shape("Side:N", scale=shape_scale, legend=alt.Legend(title="Run")),
+                        size=alt.Size(
+                            "effective_amount:Q",
+                            scale=alt.Scale(range=[40, 350]),
+                            legend=None,
+                        ),
+                        tooltip=[
+                            alt.Tooltip("Side:N", title="Run"),
+                            alt.Tooltip("spell_name:N", title="Spell"),
+                            alt.Tooltip("elapsed_s:Q", format=".2f", title="At (s)"),
+                            alt.Tooltip("effective_amount:Q", format=",", title="Amount"),
+                            alt.Tooltip("type:N", title="Type"),
+                        ],
+                    )
+                    .properties(height=tl_height)
+                )
+                st.altair_chart(ov_chart, use_container_width=True)
+        except Exception:
+            st.caption("Overlaid timeline unavailable.")
