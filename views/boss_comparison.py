@@ -343,9 +343,25 @@ def _render_side(
             # Filter to the caller-supplied spell union so both sides show the same rows
             if tl_spells:
                 tl_df = tl_df[tl_df["spell_name"].isin(tl_spells)]
+            # Pad with one invisible sentinel row per spell that has no data so
+            # Altair is forced to render every Y row regardless of actual data.
+            if tl_spells:
+                present = set(tl_df["spell_name"].unique()) if not tl_df.empty else set()
+                missing = [s for s in tl_spells if s not in present]
+                if missing:
+                    pad = pd.DataFrame({
+                        "spell_name": missing,
+                        "elapsed_s": [-1.0] * len(missing),  # off-axis; hidden via opacity
+                        "effective_amount": [0.0] * len(missing),
+                        "type": ["damage"] * len(missing),
+                        "_pad": [True] * len(missing),
+                    })
+                    tl_df["_pad"] = False
+                    tl_df = pd.concat([tl_df, pad], ignore_index=True)
             if not tl_df.empty:
-                tl_chart = (
-                    alt.Chart(tl_df)
+                # Real points layer
+                real_layer = (
+                    alt.Chart(tl_df[~tl_df.get("_pad", pd.Series(False, index=tl_df.index))])
                     .mark_circle(opacity=0.8)
                     .encode(
                         x=alt.X("elapsed_s:Q", title="Elapsed (s)"),
@@ -375,7 +391,24 @@ def _render_side(
                             alt.Tooltip("type:N", title="Type"),
                         ],
                     )
+                )
+                # Invisible anchor layer — pads Y axis with all tl_spells
+                anchor_layer = (
+                    alt.Chart(tl_df)
+                    .mark_point(opacity=0, size=0)
+                    .encode(
+                        x=alt.X("elapsed_s:Q"),
+                        y=alt.Y(
+                            "spell_name:N",
+                            scale=alt.Scale(domain=tl_spells),
+                            sort=tl_spells,
+                        ),
+                    )
+                )
+                tl_chart = (
+                    alt.layer(anchor_layer, real_layer)
                     .properties(height=tl_height)
+                    .resolve_scale(color="independent", size="independent")
                 )
                 st.altair_chart(tl_chart, use_container_width=True)
             else:
@@ -620,11 +653,6 @@ def boss_comparison_view() -> None:
     if tl_spells:
         st.markdown("---")
         st.subheader("Rotation comparison (overlaid)")
-        st.caption(
-            "Both runs on the same elapsed-time axis. "
-            "Left run = filled circle · Right run = cross. "
-            "Hover for spell, timing, and amount."
-        )
         try:
             overlay_rows = []
             for side_label, cid, sub in [("Left", left_cid, left_sub), ("Right", right_cid, right_sub)]:
@@ -643,36 +671,74 @@ def boss_comparison_view() -> None:
 
             if overlay_rows:
                 ov_df = pd.concat(overlay_rows, ignore_index=True)
-                shape_scale = alt.Scale(domain=["Left", "Right"], range=["circle", "cross"])
-                color_scale_ov = alt.Scale(domain=["Left", "Right"], range=["#7CFC00", "#FF8C00"])
-                ov_chart = (
-                    alt.Chart(ov_df)
-                    .mark_point(filled=True, opacity=0.75, size=80)
+                # Shared type colour scale — same as the individual swimlanes
+                type_color = alt.Color(
+                    "type:N",
+                    scale=alt.Scale(
+                        domain=["damage", "heal", "absorb"],
+                        range=["#7CFC00", "#00CED1", "#4169E1"],
+                    ),
+                    legend=alt.Legend(title="Type"),
+                )
+                type_size = alt.Size(
+                    "effective_amount:Q",
+                    scale=alt.Scale(range=[40, 350]),
+                    legend=None,
+                )
+                shared_y = alt.Y(
+                    "spell_name:N",
+                    title="",
+                    scale=alt.Scale(domain=tl_spells),
+                    sort=tl_spells,
+                    axis=alt.Axis(labelLimit=300),
+                )
+                shared_x = alt.X("elapsed_s:Q", title="Elapsed (s)")
+                shared_tooltip = [
+                    alt.Tooltip("Side:N", title="Run"),
+                    alt.Tooltip("spell_name:N", title="Spell"),
+                    alt.Tooltip("elapsed_s:Q", format=".2f", title="At (s)"),
+                    alt.Tooltip("effective_amount:Q", format=",", title="Amount"),
+                    alt.Tooltip("type:N", title="Type"),
+                ]
+
+                left_df = ov_df[ov_df["Side"] == "Left"]
+                right_df = ov_df[ov_df["Side"] == "Right"]
+
+                # Left run: filled circle
+                left_layer = (
+                    alt.Chart(left_df)
+                    .mark_point(shape="circle", filled=True, opacity=0.8)
                     .encode(
-                        x=alt.X("elapsed_s:Q", title="Elapsed (s)"),
-                        y=alt.Y(
-                            "spell_name:N",
-                            title="",
-                            scale=alt.Scale(domain=tl_spells),
-                            sort=tl_spells,
-                            axis=alt.Axis(labelLimit=300),
-                        ),
-                        color=alt.Color("Side:N", scale=color_scale_ov, legend=alt.Legend(title="Run")),
-                        shape=alt.Shape("Side:N", scale=shape_scale, legend=alt.Legend(title="Run")),
-                        size=alt.Size(
-                            "effective_amount:Q",
-                            scale=alt.Scale(range=[40, 350]),
-                            legend=None,
-                        ),
-                        tooltip=[
-                            alt.Tooltip("Side:N", title="Run"),
-                            alt.Tooltip("spell_name:N", title="Spell"),
-                            alt.Tooltip("elapsed_s:Q", format=".2f", title="At (s)"),
-                            alt.Tooltip("effective_amount:Q", format=",", title="Amount"),
-                            alt.Tooltip("type:N", title="Type"),
-                        ],
+                        x=shared_x, y=shared_y,
+                        color=type_color, size=type_size,
+                        tooltip=shared_tooltip,
                     )
+                )
+                # Right run: filled square, same colours
+                right_layer = (
+                    alt.Chart(right_df)
+                    .mark_point(shape="square", filled=True, opacity=0.8)
+                    .encode(
+                        x=shared_x, y=shared_y,
+                        color=type_color, size=type_size,
+                        tooltip=shared_tooltip,
+                    )
+                )
+                # Invisible anchor so all tl_spells rows appear even if one
+                # side has no data for that spell
+                anchor_ov = (
+                    alt.Chart(ov_df)
+                    .mark_point(opacity=0, size=0)
+                    .encode(x=shared_x, y=shared_y)
+                )
+                ov_chart = (
+                    alt.layer(anchor_ov, left_layer, right_layer)
                     .properties(height=tl_height)
+                    .resolve_scale(color="shared", size="shared")
+                )
+                st.caption(
+                    "Left run = circle · Right run = square · "
+                    "Colour = event type (green = damage, teal = heal, blue = absorb)"
                 )
                 st.altair_chart(ov_chart, use_container_width=True)
         except Exception:
