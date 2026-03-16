@@ -352,7 +352,8 @@ def _render_side(
                         y=alt.Y(
                             "spell_name:N",
                             title="",
-                            sort=tl_spells if tl_spells else alt.EncodingSortField(field="elapsed_s", op="min"),
+                            scale=alt.Scale(domain=tl_spells),
+                            sort=tl_spells,
                         ),
                         color=alt.Color(
                             "type:N",
@@ -652,6 +653,7 @@ def boss_comparison_view() -> None:
                         y=alt.Y(
                             "spell_name:N",
                             title="",
+                            scale=alt.Scale(domain=tl_spells),
                             sort=tl_spells,
                             axis=alt.Axis(labelLimit=300),
                         ),
