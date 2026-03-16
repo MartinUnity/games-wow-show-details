@@ -338,6 +338,11 @@ def _render_side(
             & (sub["spell_name"] != "")
             & sub["type"].isin(["damage", "heal", "absorb"])
         ].copy()
+        st.caption(
+            f"DEBUG: cid={cid} sub_rows={len(sub)} tl_rows={len(tl_df)} "
+            f"unique_spells={tl_df['spell_name'].nunique() if not tl_df.empty else 0} "
+            f"tl_spells_count={len(tl_spells)}"
+        )
         if not tl_df.empty and pd.notna(start_dt):
             tl_df["elapsed_s"] = (tl_df["timestamp_dt"] - start_dt).dt.total_seconds()
             # Filter to the caller-supplied spell union so both sides show the same rows
