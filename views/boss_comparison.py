@@ -167,8 +167,24 @@ def _run_label(row: pd.Series) -> str:
 # ── Comparison panel ──────────────────────────────────────────────────────────
 
 
-def _render_side(df_raw: pd.DataFrame, cid: int, row: pd.Series, resample_s: int = 2) -> None:
-    """Render headline metrics + ability breakdown + time-series for one combat_id."""
+def _render_side(
+    df_raw: pd.DataFrame,
+    cid: int,
+    row: pd.Series,
+    dmg_agg: pd.DataFrame,
+    heal_agg: pd.DataFrame,
+    dmg_table_h: int,
+    heal_table_h: int,
+    dmg_chart_h: int,
+    heal_chart_h: int,
+    resample_s: int = 2,
+) -> None:
+    """Render headline metrics + ability breakdown + time-series for one combat_id.
+
+    The caller pre-computes *dmg_agg* / *heal_agg* for both sides and passes
+    uniform fixed pixel heights so the two columns stay vertically aligned
+    regardless of how many rows each side has.
+    """
     sub = df_raw[df_raw["combat_id"] == cid].sort_values("timestamp_dt")
 
     if sub.empty:
@@ -203,16 +219,19 @@ def _render_side(df_raw: pd.DataFrame, cid: int, row: pd.Series, resample_s: int
     m3.metric("Total Dmg", _compact(dmg))
     m4.metric("Total Heal", _compact(heal))
 
-    # Ability breakdown
+    # Ability breakdown — fixed heights passed in from caller so both columns
+    # always occupy the same vertical space regardless of row count.
     st.markdown("**Abilities**")
-    dmg_agg = spell_aggregates(sub, "damage", top_n=DEFAULT_TOP_N_ABILITIES)
-    heal_agg = spell_aggregates(sub, ["heal", "absorb"], top_n=DEFAULT_TOP_N_ABILITIES)
-
     tab_d, tab_h = st.tabs(["Damage", "Healing"])
 
     with tab_d:
         if dmg_agg.empty:
             st.caption("No damage events.")
+            # Reserve the same vertical space as the other side would use.
+            st.markdown(
+                f"<div style='height:{dmg_table_h + dmg_chart_h}px'></div>",
+                unsafe_allow_html=True,
+            )
         else:
             st.dataframe(
                 dmg_agg[["spell", "count", "total", "avg", "pct"]].style.format(
@@ -220,6 +239,7 @@ def _render_side(df_raw: pd.DataFrame, cid: int, row: pd.Series, resample_s: int
                 ),
                 hide_index=True,
                 use_container_width=True,
+                height=dmg_table_h,
             )
             try:
                 st.altair_chart(
@@ -236,7 +256,7 @@ def _render_side(df_raw: pd.DataFrame, cid: int, row: pd.Series, resample_s: int
                             alt.Tooltip("pct:Q", format=".1f"),
                         ],
                     )
-                    .properties(height=max(120, 22 * len(dmg_agg))),
+                    .properties(height=dmg_chart_h),
                     use_container_width=True,
                 )
             except Exception:
@@ -245,6 +265,10 @@ def _render_side(df_raw: pd.DataFrame, cid: int, row: pd.Series, resample_s: int
     with tab_h:
         if heal_agg.empty:
             st.caption("No healing events.")
+            st.markdown(
+                f"<div style='height:{heal_table_h + heal_chart_h}px'></div>",
+                unsafe_allow_html=True,
+            )
         else:
             st.dataframe(
                 heal_agg[["spell", "count", "total", "avg", "pct"]].style.format(
@@ -252,6 +276,7 @@ def _render_side(df_raw: pd.DataFrame, cid: int, row: pd.Series, resample_s: int
                 ),
                 hide_index=True,
                 use_container_width=True,
+                height=heal_table_h,
             )
             try:
                 st.altair_chart(
@@ -268,7 +293,7 @@ def _render_side(df_raw: pd.DataFrame, cid: int, row: pd.Series, resample_s: int
                             alt.Tooltip("pct:Q", format=".1f"),
                         ],
                     )
-                    .properties(height=max(120, 22 * len(heal_agg))),
+                    .properties(height=heal_chart_h),
                     use_container_width=True,
                 )
             except Exception:
@@ -455,8 +480,46 @@ def boss_comparison_view() -> None:
         key="bcomp_resample",
     )
 
+    # Pre-compute spell aggregates for both sides so we can derive uniform
+    # fixed heights before entering the two columns.  This ensures the table
+    # and bar-chart blocks are identical in pixel height on both sides even
+    # when one side has fewer spells than the other.
+    ROW_PX = 35       # approximate height per data row in st.dataframe
+    HEADER_PX = 38    # fixed header overhead for st.dataframe
+    BAR_PX = 22       # height per bar in the Altair chart
+    MIN_TABLE_H = 120 # minimum pixel height for table
+    MIN_CHART_H = 120 # minimum pixel height for chart
+
+    left_sub = df_filtered[df_filtered["combat_id"] == left_cid]
+    right_sub = df_filtered[df_filtered["combat_id"] == right_cid]
+
+    left_dmg_agg = spell_aggregates(left_sub, "damage", top_n=DEFAULT_TOP_N_ABILITIES)
+    right_dmg_agg = spell_aggregates(right_sub, "damage", top_n=DEFAULT_TOP_N_ABILITIES)
+    left_heal_agg = spell_aggregates(left_sub, ["heal", "absorb"], top_n=DEFAULT_TOP_N_ABILITIES)
+    right_heal_agg = spell_aggregates(right_sub, ["heal", "absorb"], top_n=DEFAULT_TOP_N_ABILITIES)
+
+    max_dmg_rows = max(len(left_dmg_agg), len(right_dmg_agg), 1)
+    max_heal_rows = max(len(left_heal_agg), len(right_heal_agg), 1)
+
+    dmg_table_h = max(MIN_TABLE_H, HEADER_PX + ROW_PX * max_dmg_rows)
+    heal_table_h = max(MIN_TABLE_H, HEADER_PX + ROW_PX * max_heal_rows)
+    dmg_chart_h = max(MIN_CHART_H, BAR_PX * max_dmg_rows)
+    heal_chart_h = max(MIN_CHART_H, BAR_PX * max_heal_rows)
+
     col_left, col_right = st.columns(2)
     with col_left:
-        _render_side(df_filtered, left_cid, left_row, resample_s=resample_s)
+        _render_side(
+            df_filtered, left_cid, left_row,
+            dmg_agg=left_dmg_agg, heal_agg=left_heal_agg,
+            dmg_table_h=dmg_table_h, heal_table_h=heal_table_h,
+            dmg_chart_h=dmg_chart_h, heal_chart_h=heal_chart_h,
+            resample_s=resample_s,
+        )
     with col_right:
-        _render_side(df_filtered, right_cid, right_row, resample_s=resample_s)
+        _render_side(
+            df_filtered, right_cid, right_row,
+            dmg_agg=right_dmg_agg, heal_agg=right_heal_agg,
+            dmg_table_h=dmg_table_h, heal_table_h=heal_table_h,
+            dmg_chart_h=dmg_chart_h, heal_chart_h=heal_chart_h,
+            resample_s=resample_s,
+        )
