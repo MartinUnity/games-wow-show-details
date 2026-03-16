@@ -10,7 +10,27 @@ import pandas as pd
 import streamlit as st
 
 from utils.data_engine import compute_runs, spell_aggregates
-from utils.data_io import _fmt_compact_amount, load_csv, load_healer_spells
+from utils.data_io import (
+    DEFAULT_TOP_N_ABILITIES,
+    _fmt_compact_amount,
+    load_csv,
+    load_healer_spells,
+)
+
+
+@st.dialog("Combat Preview", width="large")
+def _show_combat_dialog(combat_id: int) -> None:
+    """Modal dialog showing the right-hand combat detail for a given combat_id."""
+    from views.combat_detail import combat_detail_view
+
+    df = load_csv()
+    if df is None or df.empty:
+        st.warning("No parsed data available.")
+        return
+    if combat_id not in df["combat_id"].values:
+        st.warning(f"Combat #{combat_id} not found in loaded data.")
+        return
+    combat_detail_view(df, combat_id, resample_s=2, smooth_s=3, top_n=DEFAULT_TOP_N_ABILITIES)
 
 
 def runs_view():
@@ -396,9 +416,8 @@ def runs_view():
                 _cid = int(er["combat_id"])
                 _is_boss = _cid in boss_kill_ids
                 _star = "\u2b50 " if _is_boss else ""  # Golden Star
-                # If it's a boss, we use a slightly more prominent target label
                 _target = str(er.get("main_target", "")) or "\u2014"
-                _disp_target = f"**{_star}{_target}**" if _is_boss else f"{_star}{_target}"
+                _disp_target = f"{_star}{_target}"
 
                 # Compute per-encounter absorb (if present in raw data)
                 try:
@@ -798,88 +817,41 @@ def runs_view():
             if enc_df_disp.empty:
                 st.info("No boss encounters found in this run.")
             else:
-                # Render a lightweight markdown table where the encounter id (#)
-                # is a clickable link that navigates to the Combat Viewer via
-                # the `?combat=<id>` query param. This keeps behavior simple and
-                # allows sharing/bookmarking the URL for a specific encounter.
-                cols_to_disp = [c for c in enc_df_disp.columns if c != "is_boss"]
+                # ── Clickable encounter table (st.dataframe with row selection) ─
+                # Drop is_boss from display; use it only for styling.
+                # Rename "#" → "ID  ↗" so the column next to the selection
+                # checkbox makes the click-to-preview intent clear.
+                display_cols = ["#", "Target", "Start", "Duration", "Dmg", "Heal", "DPS", "HPS"]
+                enc_display = enc_df_disp[display_cols].copy()
+                enc_display = enc_display.rename(columns={"#": "ID  ↗"})
 
-                from urllib.parse import quote_plus
+                def _style_enc_row(row):
+                    """Gold text for boss rows (identified by ⭐ prefix), dim grey otherwise."""
+                    is_boss_row = str(row["Target"]).startswith("\u2b50")
+                    color = "#FFD700" if is_boss_row else ""
+                    return [f"color:{color}" if color else "" for _ in row]
 
-                def _md_escape(text: str) -> str:
-                    # Minimal escaping for HTML cell content
-                    return (
-                        str(text)
-                        .replace("|", "\|")
-                        .replace("&", "&amp;")
-                        .replace("<", "&lt;")
-                        .replace(">", "&gt;")
-                    )
-
-                # Build an HTML table so we can style padding, hover and boss rows.
-                tbl_lines = []
-                tbl_lines.append("<div style='overflow:auto'>")
-                tbl_lines.append(
-                    "<table style='border-collapse:collapse;width:100%;font-size:0.95rem;'>"
-                )
-                # CSS for padding, hover, and boss-row highlighting
-                tbl_lines.append(
-                    "<style>\n"
-                    "  .enc-table td{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.04);}\n"
-                    "  .enc-table tr:hover td{background:rgba(255,255,255,0.02);}\n"
-                    "  .enc-table tr.boss td{background:rgba(255,215,0,0.06);color:#FFD700;font-weight:600;}\n"
-                    "  .enc-table a{display:block;color:inherit;text-decoration:none;padding:6px 0;}\n"
-                    "  .enc-table td.num{font-family:monospace;}\n"
-                    "</style>"
+                styled_enc = enc_display.style.apply(_style_enc_row, axis=1).format(
+                    {"Dmg": "{:,}", "Heal": "{:,}", "DPS": "{:.1f}", "HPS": "{:.1f}"}
                 )
 
-                # Header
-                hdr = (
-                    "<thead><tr>"
-                    "<th style='text-align:right;padding:10px 14px;color:#999'>#</th>"
-                    "<th style='text-align:left;padding:10px 14px;color:#ccc'>Target</th>"
-                    "<th style='text-align:left;padding:10px 14px;color:#ccc'>Start</th>"
-                    "<th style='text-align:left;padding:10px 14px;color:#ccc'>Duration</th>"
-                    "<th style='text-align:right;padding:10px 14px;color:#999'>Dmg</th>"
-                    "<th style='text-align:right;padding:10px 14px;color:#999'>Heal</th>"
-                    "<th style='text-align:right;padding:10px 14px;color:#999'>DPS</th>"
-                    "<th style='text-align:right;padding:10px 14px;color:#999'>HPS</th>"
-                    "</tr></thead>"
+                st.caption("Click a row to open the combat preview.")
+                row_px = 35
+                tbl_h = min(600, 38 + row_px * max(3, len(enc_display)))
+                sel_event = st.dataframe(
+                    styled_enc,
+                    hide_index=True,
+                    height=tbl_h,
+                    use_container_width=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="enc_table_sel",
                 )
-                tbl_lines.append(hdr)
-                tbl_lines.append("<tbody class='enc-table'>")
-
-                for _, row in enc_df_disp.iterrows():
-                    cid = int(row["#"])
-                    is_boss = bool(row.get("is_boss", False))
-                    target = _md_escape(row["Target"]).replace("**", "")
-                    start = _md_escape(row["Start"]) if row.get("Start") else ""
-                    duration = _md_escape(row["Duration"]) if row.get("Duration") else ""
-                    dmg = f"{int(row.get('Dmg', 0)):,}"
-                    heal = f"{int(row.get('Heal', 0)):,}"
-                    dps = f"{row.get('DPS', 0):.1f}"
-                    hps = f"{row.get('HPS', 0):.1f}"
-                    view_encoded = quote_plus("Combat Viewer")
-                    href = f"?view={view_encoded}&combat={cid}"
-                    tr_cls = " class='boss'" if is_boss else ""
-                    tbl_lines.append(f"<tr{tr_cls}>")
-                    tbl_lines.append(
-                        f"<td style='text-align:right' class='num'><a href='{href}'>#{cid}</a></td>"
-                    )
-                    tbl_lines.append(
-                        f"<td style='text-align:left'><a href='{href}'>{target}</a></td>"
-                    )
-                    tbl_lines.append(f"<td><a href='{href}'>{start}</a></td>")
-                    tbl_lines.append(f"<td><a href='{href}'>{duration}</a></td>")
-                    tbl_lines.append(f"<td class='num'><a href='{href}'>{dmg}</a></td>")
-                    tbl_lines.append(f"<td class='num'><a href='{href}'>{heal}</a></td>")
-                    tbl_lines.append(f"<td class='num'><a href='{href}'>{dps}</a></td>")
-                    tbl_lines.append(f"<td class='num'><a href='{href}'>{hps}</a></td>")
-                    tbl_lines.append("</tr>")
-
-                tbl_lines.append("</tbody></table></div>")
-
-                st.markdown("".join(tbl_lines), unsafe_allow_html=True)
+                # Open the dialog immediately when a row is selected
+                sel_rows = sel_event.selection.get("rows", []) if sel_event and sel_event.selection else []
+                if sel_rows:
+                    _clicked_cid = int(enc_display.iloc[sel_rows[0]]["ID  ↗"])
+                    _show_combat_dialog(_clicked_cid)
 
             if not enc_df_full.empty:
                 try:
@@ -940,4 +912,4 @@ def runs_view():
 
                 except Exception as e:
                     st.error(f"Chart Error: {e}")
-            st.caption("Navigate to **Combat Viewer** to inspect any individual encounter in full detail.")
+
