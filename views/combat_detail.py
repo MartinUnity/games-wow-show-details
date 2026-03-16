@@ -39,7 +39,10 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
     else:
         target_name = ""
 
-    st.header(f"Combat {combat_id}")
+    header_label = f"Combat {combat_id}"
+    if "target_name" in locals() and target_name:
+        header_label = f"{header_label} — {target_name}"
+    st.header(header_label)
 
     # Hide / unhide button
     _hidden = load_hidden()
