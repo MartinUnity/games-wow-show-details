@@ -32,6 +32,7 @@ from utils.data_io import (
     toggle_hidden,
 )
 from views.all_encounters import all_encounters_view
+from views.boss_comparison import boss_comparison_view
 from views.character_comparison import character_comparison_view
 from views.combat_detail import combat_detail_view
 from views.runs import runs_view
@@ -69,6 +70,7 @@ def main():
             "All Encounters",
             "Totals",
             "Character Comparison",
+            "Boss Comparison",
         ],
         index=0,
         key="app_view",
@@ -408,6 +410,10 @@ def main():
             ]
         )
         character_comparison_view(player_like_chars)
+        return
+
+    if view == "Boss Comparison":
+        boss_comparison_view()
         return
 
     # ── Combat Viewer ─────────────────────────────────────────────────────
