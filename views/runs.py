@@ -264,6 +264,22 @@ def runs_view():
                 selected_run_id = int(sel.iloc[0]["run_id"])
             elif isinstance(sel, list) and sel:
                 selected_run_id = int(sel[0]["run_id"])
+            # If a run is selected, navigate to Combat Viewer and pass the
+            # selected combat id via query params so the Combat Viewer can
+            # pre-load that encounter. We also set the sidebar view state to
+            # "Combat Viewer" so the app switches pages immediately.
+            if selected_run_id is not None:
+                try:
+                    st.experimental_set_query_params(combat=str(selected_run_id))
+                    # The radio in streamlit_app.py stores its selection under
+                    # the session state key 'View' (the label), so set that
+                    # value to switch pages programmatically.
+                    st.session_state["View"] = "Combat Viewer"
+                    st.experimental_rerun()
+                except Exception:
+                    # If navigation fails for any reason, fall back to leaving
+                    # the selection in-place without navigating.
+                    pass
         except Exception:
             # Fallback selectbox
             run_options = [
@@ -782,25 +798,88 @@ def runs_view():
             if enc_df_disp.empty:
                 st.info("No boss encounters found in this run.")
             else:
-                # Remove helper column for display
+                # Render a lightweight markdown table where the encounter id (#)
+                # is a clickable link that navigates to the Combat Viewer via
+                # the `?combat=<id>` query param. This keeps behavior simple and
+                # allows sharing/bookmarking the URL for a specific encounter.
                 cols_to_disp = [c for c in enc_df_disp.columns if c != "is_boss"]
-                st.dataframe(
-                    enc_df_disp[cols_to_disp]
-                    .style.format({"Dmg": "{:,}", "Heal": "{:,}", "DPS": "{:.1f}", "HPS": "{:.1f}"})
-                    .apply(
-                        lambda row: [
-                            (
-                                "background-color: rgba(255, 215, 0, 0.15); color: #FFD700; font-weight: bold"
-                                if enc_df_disp.loc[row.name, "is_boss"]
-                                else ""
-                            )
-                            for col in cols_to_disp
-                        ],
-                        axis=1,
-                    ),
-                    hide_index=True,
-                    width="stretch",
+
+                from urllib.parse import quote_plus
+
+                def _md_escape(text: str) -> str:
+                    # Minimal escaping for HTML cell content
+                    return (
+                        str(text)
+                        .replace("|", "\|")
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;")
+                    )
+
+                # Build an HTML table so we can style padding, hover and boss rows.
+                tbl_lines = []
+                tbl_lines.append("<div style='overflow:auto'>")
+                tbl_lines.append(
+                    "<table style='border-collapse:collapse;width:100%;font-size:0.95rem;'>"
                 )
+                # CSS for padding, hover, and boss-row highlighting
+                tbl_lines.append(
+                    "<style>\n"
+                    "  .enc-table td{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.04);}\n"
+                    "  .enc-table tr:hover td{background:rgba(255,255,255,0.02);}\n"
+                    "  .enc-table tr.boss td{background:rgba(255,215,0,0.06);color:#FFD700;font-weight:600;}\n"
+                    "  .enc-table a{display:block;color:inherit;text-decoration:none;padding:6px 0;}\n"
+                    "  .enc-table td.num{font-family:monospace;}\n"
+                    "</style>"
+                )
+
+                # Header
+                hdr = (
+                    "<thead><tr>"
+                    "<th style='text-align:right;padding:10px 14px;color:#999'>#</th>"
+                    "<th style='text-align:left;padding:10px 14px;color:#ccc'>Target</th>"
+                    "<th style='text-align:left;padding:10px 14px;color:#ccc'>Start</th>"
+                    "<th style='text-align:left;padding:10px 14px;color:#ccc'>Duration</th>"
+                    "<th style='text-align:right;padding:10px 14px;color:#999'>Dmg</th>"
+                    "<th style='text-align:right;padding:10px 14px;color:#999'>Heal</th>"
+                    "<th style='text-align:right;padding:10px 14px;color:#999'>DPS</th>"
+                    "<th style='text-align:right;padding:10px 14px;color:#999'>HPS</th>"
+                    "</tr></thead>"
+                )
+                tbl_lines.append(hdr)
+                tbl_lines.append("<tbody class='enc-table'>")
+
+                for _, row in enc_df_disp.iterrows():
+                    cid = int(row["#"])
+                    is_boss = bool(row.get("is_boss", False))
+                    target = _md_escape(row["Target"]).replace("**", "")
+                    start = _md_escape(row["Start"]) if row.get("Start") else ""
+                    duration = _md_escape(row["Duration"]) if row.get("Duration") else ""
+                    dmg = f"{int(row.get('Dmg', 0)):,}"
+                    heal = f"{int(row.get('Heal', 0)):,}"
+                    dps = f"{row.get('DPS', 0):.1f}"
+                    hps = f"{row.get('HPS', 0):.1f}"
+                    view_encoded = quote_plus("Combat Viewer")
+                    href = f"?view={view_encoded}&combat={cid}"
+                    tr_cls = " class='boss'" if is_boss else ""
+                    tbl_lines.append(f"<tr{tr_cls}>")
+                    tbl_lines.append(
+                        f"<td style='text-align:right' class='num'><a href='{href}'>#{cid}</a></td>"
+                    )
+                    tbl_lines.append(
+                        f"<td style='text-align:left'><a href='{href}'>{target}</a></td>"
+                    )
+                    tbl_lines.append(f"<td><a href='{href}'>{start}</a></td>")
+                    tbl_lines.append(f"<td><a href='{href}'>{duration}</a></td>")
+                    tbl_lines.append(f"<td class='num'><a href='{href}'>{dmg}</a></td>")
+                    tbl_lines.append(f"<td class='num'><a href='{href}'>{heal}</a></td>")
+                    tbl_lines.append(f"<td class='num'><a href='{href}'>{dps}</a></td>")
+                    tbl_lines.append(f"<td class='num'><a href='{href}'>{hps}</a></td>")
+                    tbl_lines.append("</tr>")
+
+                tbl_lines.append("</tbody></table></div>")
+
+                st.markdown("".join(tbl_lines), unsafe_allow_html=True)
 
             if not enc_df_full.empty:
                 try:
