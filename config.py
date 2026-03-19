@@ -48,9 +48,7 @@ HEALER_SPELLS_PATH = os.path.join(SIDECAR_DIR, "healer_spells.json")
 # ── CSV backup directory ─────────────────────────────────────────────────────
 # Timestamped backups of parsed_combat_data.csv are stored here instead of
 # cluttering the repo root.
-CSV_BACKUP_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data", "csv-backups"
-)
+CSV_BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "csv-backups")
 
 # ── Log archive settings ──────────────────────────────────────────────────────
 # How many parsed_combat_data.csv.bak.* files to keep before pruning.
@@ -65,3 +63,18 @@ DEFAULT_TOP_N_ABILITIES = 7
 
 # Minimum number of combats a source must have to be shown in the character list
 MIN_SOURCE_COMBATS = 3
+
+
+# -- BASE path for runme.sh scripts (e.g., for the Streamlit app) ─────────────────────────────────────
+# This allows runme.sh to set a custom base path for scripts, which is useful
+# Centralized fixed workspace paths for scripts that must use repository-stored data.
+# Change BASE_DIR here if you ever move the repository location.
+BASE_DIR = "/home/martin/src/games/games-wow-show-details"
+
+
+def data_path(filename: str) -> str:
+    return os.path.join(BASE_DIR, filename)
+
+
+# Common paths used by wow-parser.py and streamlit_app.py
+PARSED_COMBAT_DATA = data_path("parsed_combat_data.csv")
