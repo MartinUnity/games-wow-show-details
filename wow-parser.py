@@ -165,29 +165,6 @@ def parse_combat_line(line, current_char_name):
         data["spell_name"] = (
             rest_parts[9].replace('"', "") if len(rest_parts) > 9 else "Unknown"
         )
-        # Robust spell_id extraction: try several candidate positions and
-        # also attempt to locate the spell_name in the parts and take the
-        # preceding numeric token as the id when possible.
-        sid = 0
-        try:
-            # candidate indices commonly used for spell id
-            candidates = [8, 11, 15]
-            for c in candidates:
-                if len(rest_parts) > c and str(rest_parts[c]).isdigit():
-                    sid = int(rest_parts[c])
-                    break
-            # fallback: find the index of the spell name and use the token before it
-            if sid == 0:
-                sname = data["spell_name"]
-                for idx, val in enumerate(rest_parts):
-                    if isinstance(val, str) and val.replace('"', "") == sname and idx > 0:
-                        prev = rest_parts[idx - 1]
-                        if str(prev).isdigit():
-                            sid = int(prev)
-                            break
-        except Exception:
-            sid = 0
-        data["spell_id"] = sid
         # spell id (best-effort)
         try:
             sid = int(rest_parts[8]) if len(rest_parts) > 8 and str(rest_parts[8]).isdigit() else 0
@@ -208,25 +185,6 @@ def parse_combat_line(line, current_char_name):
         data["spell_name"] = (
             rest_parts[9].replace('"', "") if len(rest_parts) > 9 else "Unknown"
         )
-        # Robust extraction for damage spell id (same approach as heals)
-        sid = 0
-        try:
-            candidates = [8, 11, 15]
-            for c in candidates:
-                if len(rest_parts) > c and str(rest_parts[c]).isdigit():
-                    sid = int(rest_parts[c])
-                    break
-            if sid == 0:
-                sname = data["spell_name"]
-                for idx, val in enumerate(rest_parts):
-                    if isinstance(val, str) and val.replace('"', "") == sname and idx > 0:
-                        prev = rest_parts[idx - 1]
-                        if str(prev).isdigit():
-                            sid = int(prev)
-                            break
-        except Exception:
-            sid = 0
-        data["spell_id"] = sid
         try:
             sid = int(rest_parts[8]) if len(rest_parts) > 8 and str(rest_parts[8]).isdigit() else 0
         except Exception:
@@ -248,7 +206,9 @@ def parse_combat_line(line, current_char_name):
         data["spell_id"] = 0
         if len(rest_parts) > 5:
             data["target"] = rest_parts[5].replace('"', "")
-        amt = to_int(rest_parts[-8]) if len(rest_parts) >= 8 else to_int(rest_parts[-1])
+        # Melee damage is field index 28 in the 37-field SWING_DAMAGE layout
+        # (rest_parts[-9]). The adjacent field [-8] is a -1 sentinel.
+        amt = to_int(rest_parts[-9]) if len(rest_parts) >= 9 else to_int(rest_parts[-1])
         data["amount"] = amt
         data["effective_amount"] = amt
 
@@ -769,7 +729,6 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
     print(f"  Detected {len(encounters)} encounter(s).")
 
     # Pass 2 – extract player events and stamp each with the right combat_id.
-    src_map = {}
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(header)
@@ -912,7 +871,6 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
     print(f"  Detected {len(encounters)} encounter(s) across {len(filepaths)} file(s).")
 
     # Pass 2 – extract player events and stamp each with the right combat_id.
-    src_map = {}
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(header)
