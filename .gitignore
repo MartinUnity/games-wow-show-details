@@ -11,3 +11,7 @@ htmx/
 
 # Ignore archived combat logs stored under data/logs
 data/logs/*.txt.gz
+
+# runme.sh runtime artifacts
+runme.logs/
+runme.pids/

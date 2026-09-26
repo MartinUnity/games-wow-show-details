@@ -7,6 +7,7 @@ All functions are Streamlit-agnostic (no rendering commands).
 they do not trigger page rendering.
 """
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -149,37 +150,40 @@ def compute_totals_summary(path=CSV_PATH, character=None):
     total_duration_s = combats["duration_s"].sum()
     total_combats = combats["combat_id"].nunique()
 
-    # per-target aggregates
-    target_rows = []
-    targets = df[~df["target"].isnull() & (df["target"] != "")]["target"].unique()
-    for t in sorted(targets):
-        sub = df[df["target"] == t]
-        encounters = int(sub["combat_id"].nunique())
-        spans = []
-        for cid, g in sub.groupby("combat_id"):
-            s = g["timestamp_dt"].min()
-            e = g["timestamp_dt"].max()
-            if pd.notna(s) and pd.notna(e) and e > s:
-                spans.append((e - s).total_seconds())
-        total_time = sum(spans)
-        total_damage = float(sub[sub["type"] == "damage"]["effective_amount"].sum())
-        total_heal = float(sub[sub["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
-        dps = total_damage / total_time if total_time > 0 else 0.0
-        hps = total_heal / total_time if total_time > 0 else 0.0
-        target_rows.append(
+    # per-target aggregates (vectorized — avoids an O(N × #targets) row scan)
+    t_df = df[df["target"].notna() & (df["target"] != "")]
+    targets = t_df["target"].unique()
+    if t_df.empty:
+        totals_df = pd.DataFrame()
+    else:
+        grp = t_df.groupby("target")
+        span = t_df.groupby(["target", "combat_id"])["timestamp_dt"].agg(["min", "max"])
+        span_dur = (span["max"] - span["min"]).dt.total_seconds()
+        span_dur = span_dur.where(span["max"] > span["min"], 0.0).clip(lower=0)
+        total_time = span_dur.groupby(level=0).sum()
+        total_damage = t_df[t_df["type"] == "damage"].groupby("target")["effective_amount"].sum()
+        total_heal = t_df[t_df["type"].isin(["heal", "absorb"])].groupby("target")["effective_amount"].sum()
+
+        totals_df = pd.DataFrame(
             {
-                "target": t,
-                "encounters": encounters,
+                "encounters": grp["combat_id"].nunique(),
                 "total_time_s": total_time,
                 "total_damage": total_damage,
                 "total_heal": total_heal,
-                "dps": dps,
-                "hps": hps,
             }
+        ).fillna(0.0)
+        tt = totals_df["total_time_s"].to_numpy(dtype=float)
+        totals_df["dps"] = np.where(
+            tt > 0, totals_df["total_damage"].to_numpy(dtype=float) / np.where(tt > 0, tt, 1.0), 0.0
         )
-
-    totals_df = pd.DataFrame(target_rows)
-    totals_df = totals_df.sort_values(["encounters", "total_damage"], ascending=[False, False])
+        totals_df["hps"] = np.where(
+            tt > 0, totals_df["total_heal"].to_numpy(dtype=float) / np.where(tt > 0, tt, 1.0), 0.0
+        )
+        totals_df.index.name = "target"
+        totals_df = totals_df.reset_index()
+        totals_df["encounters"] = totals_df["encounters"].astype(int)
+        totals_df = totals_df[["target", "encounters", "total_time_s", "total_damage", "total_heal", "dps", "hps"]]
+        totals_df = totals_df.sort_values(["encounters", "total_damage"], ascending=[False, False]).reset_index(drop=True)
 
     meta = {
         "total_combats": int(total_combats),
@@ -224,8 +228,9 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
         df[df["type"].isin(["heal", "absorb"])].groupby("combat_id")["effective_amount"].sum().rename("total_heal")
     )
     enc_df = enc_times.join(dmg_per_enc).join(heal_per_enc).fillna(0).reset_index()
-    enc_df["dps"] = enc_df.apply(lambda r: r["total_damage"] / r["duration_s"] if r["duration_s"] > 0 else 0, axis=1)
-    enc_df["hps"] = enc_df.apply(lambda r: r["total_heal"] / r["duration_s"] if r["duration_s"] > 0 else 0, axis=1)
+    _dur = enc_df["duration_s"]
+    enc_df["dps"] = np.where(_dur > 0, enc_df["total_damage"] / _dur.replace(0, np.nan), 0.0)
+    enc_df["hps"] = np.where(_dur > 0, enc_df["total_heal"] / _dur.replace(0, np.nan), 0.0)
 
     total_damage = float(df[df["type"] == "damage"]["effective_amount"].sum())
     total_heal = float(df[df["type"].isin(["heal", "absorb"])]["effective_amount"].sum())
@@ -279,9 +284,8 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
             tgt_enc_dmg = dmg_df.groupby(["target", "combat_id"])["effective_amount"].sum().reset_index()
             enc_dur = enc_times[["duration_s"]].reset_index()  # combat_id, duration_s
             tgt_enc_dmg = tgt_enc_dmg.merge(enc_dur, on="combat_id", how="left")
-            tgt_enc_dmg["enc_dps"] = tgt_enc_dmg.apply(
-                lambda r: r["effective_amount"] / r["duration_s"] if r["duration_s"] > 0 else 0.0, axis=1
-            )
+            _dur = tgt_enc_dmg["duration_s"]
+            tgt_enc_dmg["enc_dps"] = np.where(_dur > 0, tgt_enc_dmg["effective_amount"] / _dur.replace(0, np.nan), 0.0)
             tgt_dps_stats = (
                 tgt_enc_dmg.groupby("target")["enc_dps"]
                 .agg(best_dps="max", worst_dps="min", avg_dps="mean")
@@ -406,8 +410,9 @@ def compute_runs(path=CSV_PATH, gap_minutes=20):
         )
         .reset_index()
     )
-    runs["avg_dps"] = runs.apply(lambda r: r["total_damage"] / r["duration_s"] if r["duration_s"] > 0 else 0.0, axis=1)
-    runs["avg_hps"] = runs.apply(lambda r: r["total_heal"] / r["duration_s"] if r["duration_s"] > 0 else 0.0, axis=1)
+    _dur = runs["duration_s"]
+    runs["avg_dps"] = np.where(_dur > 0, runs["total_damage"] / _dur.replace(0, np.nan), 0.0)
+    runs["avg_hps"] = np.where(_dur > 0, runs["total_heal"] / _dur.replace(0, np.nan), 0.0)
 
     # ── Join boss kills from sidecar ──────────────────────────────────────
     runs["has_boss_kill"] = False
@@ -489,51 +494,35 @@ def compute_runs(path=CSV_PATH, gap_minutes=20):
                 "Discipline_Priest": "Priest",
             }
 
-            for rid, grp in per_event.groupby("run_id"):
-                if pd.isna(rid):
-                    continue
-                try:
-                    # Iterate events in chronological order and short-circuit on
-                    # the first healer-identifying spell encountered.
-                    ordered = grp.sort_values("timestamp_dt") if "timestamp_dt" in grp.columns else grp
-                    found_spec = None
-                    for _, ev in ordered.iterrows():
-                        try:
-                            sid = ev.get("spell_id", None)
-                            # Prefer numeric id matches
-                            if sid is not None:
-                                try:
-                                    sid_int = int(sid)
-                                except Exception:
-                                    sid_int = None
-                                if sid_int and sid_int in id_to_spec:
-                                    # Pick deterministic spec from the set
-                                    specs = sorted(id_to_spec[sid_int])
-                                    found_spec = specs[0]
-                                    break
-                            # Fallback to name match
-                            sname = ev.get("spell_name", None)
-                            if sname:
-                                sname_l = str(sname).lower()
-                                if sname_l in name_to_spec:
-                                    specs = sorted(name_to_spec[sname_l])
-                                    found_spec = specs[0]
-                                    break
-                        except Exception:
-                            continue
-
-                    if found_spec:
-                        run_roles[int(rid)] = "Healer"
-                        run_spec_map[int(rid)] = found_spec
-                        run_class_map[int(rid)] = spec_to_class.get(found_spec, "")
-                    else:
-                        run_roles[int(rid)] = "DPS"
-                        run_spec_map[int(rid)] = ""
-                        run_class_map[int(rid)] = ""
-                except Exception:
-                    run_roles[int(rid)] = "DPS"
-                    run_spec_map[int(rid)] = ""
-                    run_class_map[int(rid)] = ""
+            # Vectorized healer detection: map each event to the spec of a
+            # healer-identifying spell (numeric id wins over name match), then
+            # take the earliest such event per run. Replaces the per-event
+            # iterrows scan with pandas groupby/map operations.
+            flat_id = {k: sorted(v)[0] for k, v in id_to_spec.items()}
+            flat_name = {k: sorted(v)[0] for k, v in name_to_spec.items()}
+            sid_int = pd.to_numeric(per_event["spell_id"], errors="coerce")
+            id_match = sid_int.map(flat_id)
+            name_match = per_event["spell_name"].astype(str).str.lower().map(flat_name)
+            spec = id_match.fillna(name_match)  # id matches take priority over names
+            per_event = per_event.assign(_healer_spec=spec)
+            if "timestamp_dt" in per_event.columns:
+                per_event = per_event.sort_values("timestamp_dt", kind="mergesort")
+            first_spec = (
+                per_event[per_event["_healer_spec"].notna() & per_event["run_id"].notna()]
+                .groupby("run_id")["_healer_spec"]
+                .first()
+            )
+            for rid, found in first_spec.items():
+                rid = int(rid)
+                run_roles[rid] = "Healer"
+                run_spec_map[rid] = found
+                run_class_map[rid] = spec_to_class.get(found, "")
+            for rid in per_event["run_id"].dropna().unique():
+                rid = int(rid)
+                if rid not in run_roles:
+                    run_roles[rid] = "DPS"
+                    run_spec_map[rid] = ""
+                    run_class_map[rid] = ""
 
             runs["run_role"] = runs["run_id"].map(run_roles).fillna("DPS")
             runs["is_healer_run"] = runs["run_role"] == "Healer"

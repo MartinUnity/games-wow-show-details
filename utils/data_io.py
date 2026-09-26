@@ -18,6 +18,7 @@ from config import (  # noqa: F401 – re-exported for backward-compat imports
     DEFAULT_NUM_COMBATS,
     DEFAULT_TOP_N_ABILITIES,
     HIDDEN_PATH,
+    LIVE_REFRESH_INTERVAL_MS,
     LOG_DIR,
     MAX_CSV_BACKUPS,
     MIN_SOURCE_COMBATS,

@@ -15,6 +15,7 @@ import streamlit.components.v1 as components
 
 from utils.data_engine import combat_time_series, spell_aggregates
 from utils.data_io import (
+    DATA_DIR,
     _fmt_compact_amount,
     load_hidden,
     load_notes,
@@ -22,7 +23,12 @@ from utils.data_io import (
     toggle_hidden,
 )
 from utils.export_share import register_share_ui
-from utils.replay_engine import generate_replay_manuscript, render_replay_viewer
+from utils.replay_engine import (
+    decompress_log,
+    find_log_for_combat,
+    generate_replay_manuscript,
+    render_replay_viewer,
+)
 
 
 def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
@@ -416,6 +422,7 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
         pass
 
     # ── Enable 2D Replay ──────────────────────────────
+    show_replay = False
     try:
         show_replay = st.checkbox(
             "Enable 2D Replay",
@@ -435,21 +442,27 @@ def combat_detail_view(df, combat_id, resample_s=1, smooth_s=0, top_n=5):
         )
 
     # ── Replay Viewer (Positional Data) ─────────────────────────────────
-    from utils.data_io import LOG_DIR
-
-    # Hard-linked to the test boss fight log as requested
-    latest_log = os.path.join(os.getcwd(), "testdata/WoWCombatLog-030526_164213.txt")
-
-    if show_replay and os.path.exists(latest_log):
+    if show_replay:
         st.subheader("2D Replay (Positional)")
-        with st.spinner("Building replay manuscript..."):
-            try:
-                # We need the raw log to get the X,Y data that isn't in the CSV
-                manuscript = generate_replay_manuscript(combat_df, latest_log)
-                if manuscript:
-                    replay_html = render_replay_viewer(manuscript)
-                    components.html(replay_html, height=520)
-                else:
-                    st.info("No positional data found for this combat in the latest log.")
-            except Exception as e:
-                st.error(f"Failed to load replay: {e}")
+        # We need the raw log to get the X,Y data that isn't in the CSV; locate
+        # the archived session log that recorded this combat and gunzip it.
+        replay_log = find_log_for_combat(start, end, DATA_DIR)
+        if replay_log is None:
+            st.info(
+                "No archived combat log covers this encounter's time range, so a "
+                "positional replay isn't available for it."
+            )
+        else:
+            with st.spinner("Building replay manuscript..."):
+                try:
+                    plain_log = decompress_log(replay_log)
+                    manuscript = generate_replay_manuscript(start, end, plain_log)
+                    if manuscript:
+                        components.html(render_replay_viewer(manuscript), height=520)
+                    else:
+                        st.info(
+                            "No positional data found for this combat in "
+                            f"{os.path.basename(replay_log)}."
+                        )
+                except Exception as e:
+                    st.error(f"Failed to load replay: {e}")

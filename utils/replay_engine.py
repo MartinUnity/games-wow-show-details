@@ -5,25 +5,88 @@ Uses a simple 2D canvas with panning and zooming to show unit movement.
 """
 
 import csv
+import gzip
 import json
 import os
+import re
+import shutil
+import tempfile
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
 
-def generate_replay_manuscript(combat_df, log_file_path):
-    """
-    Scans the original log file for positional data for the given combat_df.
-    Returns a JSON string containing the 'manuscript' for the JS player.
-    """
-    if combat_df.empty or not log_file_path or not os.path.exists(log_file_path):
+# Matches the session-start stamp in a log filename, e.g. WoWCombatLog-030526_164213
+_LOG_TS_RE = re.compile(r"(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})")
+
+
+def _log_start_time(path: str):
+    """Parse the MMDDYY_HHMMSS session-start time from a WoWCombatLog filename."""
+    m = _LOG_TS_RE.search(os.path.basename(path))
+    if not m:
+        return None
+    mo, dy, yr, hh, mi, ss = (int(x) for x in m.groups())
+    try:
+        return datetime(2000 + yr, mo, dy, hh, mi, ss)
+    except ValueError:
         return None
 
-    # Get the time range for the combat to optimize scanning
-    start_dt = combat_df["timestamp_dt"].min()
-    end_dt = combat_df["timestamp_dt"].max()
+
+def find_log_for_combat(start_dt, end_dt, log_dir):
+    """Return the archived log that recorded a combat, or None if none matches.
+
+    WoW combat logs are sequential sessions whose filenames encode the session
+    start time (``MMDDYY_HHMMSS``). The combat belongs to the most recent log
+    that started at or before the combat began. ``end_dt`` is accepted for API
+    symmetry and a possible future overlap check.
+    """
+    if not log_dir or not os.path.isdir(log_dir):
+        return None
+    best_path, best_start = None, None
+    for name in os.listdir(log_dir):
+        path = os.path.join(log_dir, name)
+        if not (name.endswith(".txt") or name.endswith(".txt.gz")):
+            continue
+        st_dt = _log_start_time(path)
+        if st_dt is None or st_dt > start_dt:
+            continue
+        if best_start is None or st_dt > best_start:
+            best_start, best_path = st_dt, path
+    return best_path
+
+
+@st.cache_resource(show_spinner=False)
+def decompress_log(gz_path: str) -> str:
+    """Gunzip a ``.txt.gz`` combat log to a temp ``.txt`` (cached per source).
+
+    Non-gz paths are returned unchanged. Cached so the expensive gunzip runs
+    once per file per process, not on every 3-second app rerun.
+    """
+    if not gz_path.endswith(".gz"):
+        return gz_path
+    fd, tmp = tempfile.mkstemp(prefix="wow_replay_", suffix=".txt")
+    os.close(fd)
+    with gzip.open(gz_path, "rb") as src, open(tmp, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+    return tmp
+
+
+@st.cache_data(show_spinner=False)
+def generate_replay_manuscript(start_dt, end_dt, log_file_path):
+    """
+    Scans a plain-text combat log for positional data within [start_dt, end_dt].
+    Returns a JSON string containing the 'manuscript' for the JS player, or None
+    if the log is missing or no positional events are found. Cached, because the
+    log scan is expensive and the app reruns every few seconds.
+    """
+    if (
+        start_dt is None
+        or end_dt is None
+        or not log_file_path
+        or not os.path.exists(log_file_path)
+    ):
+        return None
 
     # We need to map source/target GUIDs to names and initial positions
     units = {}  # guid -> {name: str, color: str}

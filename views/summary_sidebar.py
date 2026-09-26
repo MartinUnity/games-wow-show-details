@@ -253,9 +253,8 @@ function(params) {
                         st.session_state["combat_select"] = sel_id
                         selected_override = sel_id
                         try:
-                            st.experimental_set_query_params(
-                                combat=str(sel_id), num_combats=str(st.session_state.get("num_combats", 10))
-                            )
+                            st.query_params["combat"] = str(sel_id)
+                            st.query_params["num_combats"] = str(st.session_state.get("num_combats", 10))
                         except Exception:
                             pass
                 except Exception as e:

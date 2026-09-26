@@ -64,6 +64,12 @@ DEFAULT_TOP_N_ABILITIES = 7
 # Minimum number of combats a source must have to be shown in the character list
 MIN_SOURCE_COMBATS = 3
 
+# How often the "Follow live" auto-refresh triggers a full app rerun (ms).
+# Each rerun reloads the CSV and recomputes every view, so this is kept at
+# 10 s (down from 3 s) to cut full-rerun frequency ~3x while still surfacing
+# new tail-mode encounters promptly.
+LIVE_REFRESH_INTERVAL_MS = 10_000
+
 
 # -- BASE path for runme.sh scripts (e.g., for the Streamlit app) ─────────────────────────────────────
 # This allows runme.sh to set a custom base path for scripts, which is useful

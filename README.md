@@ -180,7 +180,7 @@ The parser uses a GUID-based state machine to track combat:
 In tail mode (`python wow-parser.py` without flags):
 - Watches the latest combat log for new events
 - Flushes completed encounters to CSV
-- Streamlit refreshes every 3 seconds to show live updates
+- Streamlit refreshes every 10 s (configurable via `LIVE_REFRESH_INTERVAL_MS` in `config.py`) to show live updates
 - Ctrl+C to stop monitoring
 
 ## 📋 Requirements
@@ -190,14 +190,14 @@ altair>=4.0.0
 pandas>=1.0.0
 streamlit>=1.0.0
 streamlit_autorefresh
-st_aggrid
+streamlit-aggrid
 ```
 
 ## ⚠️ Notes
 
 - Combat logs are stored in your Steam directory
 - The parser handles multiple log files (e.g., when you restart the game)
-- Hidden encounters are persisted totum/hidden_combats.json
+- Hidden encounters are persisted to `data/sidecar/hidden_combats.json`
 - CSV backups are created automatically during full imports
 
 ## 📄 License
