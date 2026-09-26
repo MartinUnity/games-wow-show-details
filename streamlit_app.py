@@ -24,6 +24,7 @@ from utils.data_io import (
     CSV_PATH,
     DEFAULT_NUM_COMBATS,
     DEFAULT_TOP_N_ABILITIES,
+    LIVE_REFRESH_INTERVAL_MS,
     MIN_SOURCE_COMBATS,
     _fmt_compact_amount,
     compute_character_counts,
@@ -37,6 +38,24 @@ from views.character_comparison import character_comparison_view
 from views.combat_detail import combat_detail_view
 from views.runs import runs_view
 from views.summary_sidebar import summary_view
+
+
+def _first_query_param(name: str):
+    """Return the first value of a query param as a string, or ``None``.
+
+    ``st.query_params`` may yield a single value (``str``) or a list of values
+    depending on how many times the param appears in the URL, so normalise both.
+    """
+    try:
+        val = st.query_params.get(name)
+    except Exception:
+        return None
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple)):
+        return str(val[0]) if val else None
+    return str(val)
+
 
 # ── Page config (must be the first Streamlit call) ────────────────────────────
 st.set_page_config(page_title="WoW Combat Viewer", layout="wide")
@@ -60,18 +79,23 @@ def main():
     )
 
     # --- View selector (top of sidebar) ---
-    # Use an explicit session_state key so we can programmatically switch the
-    # selected view when a query param (e.g. ?view=Combat%20Viewer) is present.
+    # Explicit option list so we can validate ?view= query params and
+    # programmatically switch the selected view (e.g. ?view=Combat%20Viewer).
+    view_options = [
+        "Combat Viewer",
+        "Runs",
+        "All Encounters",
+        "Totals",
+        "Character Comparison",
+        "Boss Comparison",
+    ]
+    # Honor ?view=... before the radio renders so deep links switch pages.
+    _qview = _first_query_param("view")
+    if _qview and _qview in view_options:
+        st.session_state["app_view"] = _qview
     view = st.sidebar.radio(
         "View",
-        options=[
-            "Combat Viewer",
-            "Runs",
-            "All Encounters",
-            "Totals",
-            "Character Comparison",
-            "Boss Comparison",
-        ],
+        options=view_options,
         index=0,
         key="app_view",
     )
@@ -97,7 +121,7 @@ def main():
         disabled=follow_disabled,
     )
     if follow_live:
-        st_autorefresh(interval=3000, key="live_autorefresh")  # rerun every 3 s
+        st_autorefresh(interval=LIVE_REFRESH_INTERVAL_MS, key="live_autorefresh")
 
     if st.sidebar.button(
         "Show Latest", help="Reset selection to the most recent encounter."
@@ -464,28 +488,21 @@ def main():
     if max_combats < 1:
         max_combats = 1
 
-    # Respect `?combat=<id>` and `?num_combats=` query params early
-    try:
-        params = st.experimental_get_query_params()
-        # Allow navigation via `?view=...` to programmatically switch pages.
-        if "view" in params and params["view"]:
-            try:
-                st.session_state["app_view"] = params["view"][0]
-            except Exception:
-                pass
-        if "combat" in params and params["combat"]:
-            try:
-                st.session_state["combat_select"] = int(params["combat"][0])
-            except Exception:
-                pass
-        if "num_combats" in params and params["num_combats"]:
-            try:
-                val = int(params["num_combats"][0])
-                st.session_state["num_combats"] = min(max_combats, max(1, val))
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # Respect `?combat=<id>` and `?num_combats=` query params early.
+    # (?view=... is handled before the sidebar radio renders.)
+    _combat_param = _first_query_param("combat")
+    if _combat_param:
+        try:
+            st.session_state["combat_select"] = int(_combat_param)
+        except Exception:
+            pass
+    _nc_param = _first_query_param("num_combats")
+    if _nc_param:
+        try:
+            val = int(_nc_param)
+            st.session_state["num_combats"] = min(max_combats, max(1, val))
+        except Exception:
+            pass
 
     # Decide which combat to show now (used for sidebar controls)
     selected_cid = int(st.session_state.get("combat_select", 0))

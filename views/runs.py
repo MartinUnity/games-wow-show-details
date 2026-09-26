@@ -120,12 +120,13 @@ def runs_view():
         s = int(s)
         return f"{s // 60}:{s % 60:02d}"
 
+    # Load the CSV once (not per row) to derive the short player name per run.
+    _raw = load_csv()
     table_rows = []
     for _, r in display_runs.iterrows():
         # Determine a short player/character name for this run (split on '-' like other views)
         try:
             _cids = enc_summary[enc_summary["run_id"] == int(r["run_id"])]["combat_id"].tolist()
-            _raw = load_csv()
             if _raw is not None and not _raw.empty and _cids:
                 _sub = _raw[_raw["combat_id"].isin(_cids)]
                 try:
@@ -284,18 +285,22 @@ def runs_view():
                 selected_run_id = int(sel.iloc[0]["run_id"])
             elif isinstance(sel, list) and sel:
                 selected_run_id = int(sel[0]["run_id"])
-            # If a run is selected, navigate to Combat Viewer and pass the
-            # selected combat id via query params so the Combat Viewer can
-            # pre-load that encounter. We also set the sidebar view state to
-            # "Combat Viewer" so the app switches pages immediately.
+            # If a run is selected, navigate to Combat Viewer and pre-load the
+            # run's primary encounter. A run can group several combats, so we
+            # resolve the selected run to a concrete combat_id (the last one in
+            # the run — the boss-kill encounter under the default filter).
             if selected_run_id is not None:
                 try:
-                    st.experimental_set_query_params(combat=str(selected_run_id))
-                    # The radio in streamlit_app.py stores its selection under
-                    # the session state key 'View' (the label), so set that
-                    # value to switch pages programmatically.
-                    st.session_state["View"] = "Combat Viewer"
-                    st.experimental_rerun()
+                    run_cids = enc_summary.loc[enc_summary["run_id"] == selected_run_id, "combat_id"]
+                    target_cid = int(run_cids.iloc[-1]) if not run_cids.empty else selected_run_id
+                    # Switch pages by writing query params, then rerunning. The
+                    # app reads ?view before the sidebar radio renders and
+                    # ?combat inside the Combat Viewer, which is safe (writing
+                    # the radio's session key directly would raise
+                    # StreamlitAPIException). The params also keep the URL shareable.
+                    st.query_params["view"] = "Combat Viewer"
+                    st.query_params["combat"] = str(target_cid)
+                    st.rerun()
                 except Exception:
                     # If navigation fails for any reason, fall back to leaving
                     # the selection in-place without navigating.
