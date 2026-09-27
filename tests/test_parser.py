@@ -144,3 +144,60 @@ def test_melee_not_double_counted_with_landed(parser):
     data, _ = parser.parse_combat_line(landed, "Zethrok-TheMaelstrom-EU")
     # LANDED must not be classified as a damage event (would double-count).
     assert data is None or data["type"] != "damage" or data["event"] != "SWING_DAMAGE"
+
+
+# ── Boss-kill sidecar (ENCOUNTER_START/END) ─────────────────────────────────────
+# Verbatim scripted-boss-encounter events from a real combat log. These are
+# independent of detect_encounters (which keys off combat activity) and feed the
+# boss_kills.jsonl sidecar. BossKillTracker collects them incrementally during the
+# export pass, replacing the old separate extract_boss_kills re-read (P4.3).
+
+ENCOUNTER_START_LINE = (
+    '3/5/2026 22:17:05.9371  ENCOUNTER_START,3433,"Spiritflayer Jin\'ma",208,1,2962'
+)
+ENCOUNTER_END_LINE = (
+    '3/5/2026 22:18:24.6131  ENCOUNTER_END,3433,"Spiritflayer Jin\'ma",208,1,1,78661'
+)
+
+EXPECTED_BOSS_KILL = {
+    "boss_name": "Spiritflayer Jin'ma",
+    "start_ts": "03/05/2026 22:17:05.937100",
+    "end_ts": "03/05/2026 22:18:24.613100",
+    "kill_flag": 1,
+    "zone_id": 2962,
+}
+
+
+def test_boss_kill_tracker_collects_encounter_pair(parser):
+    """A START→END pair must fold into exactly one sidecar record."""
+    tracker = parser.BossKillTracker()
+    for line in (ENCOUNTER_START_LINE, ENCOUNTER_END_LINE):
+        tracker.feed(line)
+    assert tracker.records == [EXPECTED_BOSS_KILL]
+
+
+def test_boss_kill_tracker_ignores_orphan_end(parser):
+    """An END with no preceding START must not produce a record."""
+    tracker = parser.BossKillTracker()
+    tracker.feed(ENCOUNTER_END_LINE)
+    assert tracker.records == []
+
+
+def test_export_csv_writes_boss_kill_sidecar(parser, tmp_path, monkeypatch):
+    """export_csv must emit the boss-kill sidecar from the same streaming pass."""
+    captured = {}
+    monkeypatch.setattr(
+        parser,
+        "_write_boss_kills",
+        lambda records, **kw: captured.__setitem__("records", records),
+    )
+    log = tmp_path / "log.txt"
+    log.write_text(
+        "\n".join([ENCOUNTER_START_LINE, ENCOUNTER_END_LINE]) + "\n",
+        encoding="utf-8",
+    )
+    csv_path = tmp_path / "out.csv"
+    parser.export_csv(str(log), csv_path=str(csv_path))
+    assert captured["records"] == [EXPECTED_BOSS_KILL]
+    assert csv_path.exists()
+    assert csv_path.read_text(encoding="utf-8").splitlines()[0].startswith("combat_id")
