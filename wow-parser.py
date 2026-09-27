@@ -950,6 +950,121 @@ def _read_max_combat_id(csv_path):
     return max_id
 
 
+def _line_timestamp(line):
+    """Parse only the leading timestamp of a combat log line.
+
+    Returns a datetime, or None if the line has no parseable timestamp.
+    Cheaper than _parse_raw_event() because it ignores the event payload.
+    """
+    if not line:
+        return None
+    parts = line.split(None, 2)
+    if len(parts) < 2:
+        return None
+    try:
+        return datetime.strptime(parts[0] + " " + parts[1], "%m/%d/%Y %H:%M:%S.%f")
+    except ValueError:
+        return None
+
+
+def _read_max_timestamp(csv_path):
+    """Return the latest event timestamp already in the CSV, or None.
+
+    Tail mode uses this to resume from where the CSV left off instead of
+    discarding the whole log with seek(0, 2).
+    """
+    if not os.path.exists(csv_path):
+        return None
+    max_dt = None
+    try:
+        with open(csv_path, "r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    dt = datetime.strptime(
+                        row.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f"
+                    )
+                except ValueError:
+                    continue
+                if max_dt is None or dt > max_dt:
+                    max_dt = dt
+    except Exception:
+        pass
+    return max_dt
+
+
+def _open_log_resuming(log_path, csv_path):
+    """Open a WoW log for tailing, resuming from the CSV's max timestamp.
+
+    Returns (file_handle_at_end, pending_lines) where pending_lines are the
+    already-written lines that are not yet in the CSV.  This recovers combat
+    that happened before tail mode started.  If the CSV is empty/absent the
+    whole log is treated as new.
+    """
+    fh = open(log_path, "r", encoding="utf-8")
+    max_csv_ts = _read_max_timestamp(csv_path)
+    fh.seek(0, 0)
+    if max_csv_ts is None:
+        pending = list(fh)
+        if pending:
+            print("  Catching up: %d lines (no prior CSV data)." % len(pending))
+    else:
+        pending = []
+        for ln in fh:
+            lts = _line_timestamp(ln)
+            if lts is not None and lts > max_csv_ts:
+                pending.append(ln)
+        if pending:
+            print(
+                "  Catching up: %d lines newer than CSV (after %s)."
+                % (len(pending), max_csv_ts.strftime("%m/%d/%Y %H:%M:%S"))
+            )
+    fh.seek(0, 2)
+    return fh, pending
+
+
+def _build_encounter_rows(
+    parsed_lines, enc_start, close_dt, combat_id, zone_id, zone_name
+):
+    """Stamp parsed combat rows and keep only those inside the encounter window.
+
+    Each row is given the encounter's ``combat_id`` when its timestamp falls in
+    ``[enc_start, close_dt]``, otherwise ``cid=0``.  Rows with ``cid=0``
+    (out-of-combat) carry no combat-meter value and are dropped.
+
+    Returns the list of in-window row lists, already in CSV column order.
+    """
+    rows = []
+    for parsed in parsed_lines:
+        if not parsed:
+            continue
+        try:
+            evt_dt = datetime.strptime(
+                parsed.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f"
+            )
+        except Exception:
+            evt_dt = None
+        in_window = bool(evt_dt and enc_start and enc_start <= evt_dt <= close_dt)
+        cid = combat_id if in_window else 0
+        rows.append(
+            [
+                cid,
+                parsed.get("timestamp", ""),
+                parsed.get("event", ""),
+                parsed.get("source", ""),
+                parsed.get("target", ""),
+                parsed.get("spell_name", ""),
+                parsed.get("amount", 0),
+                parsed.get("effective_amount", 0),
+                parsed.get("type", ""),
+                zone_id,
+                zone_name,
+                parsed.get("spell_id", 0),
+            ]
+        )
+    # Drop out-of-combat rows (cid=0) — they carry no combat-meter value.
+    return [r for r in rows if r[0] != 0]
+
+
 def run_tail_mode(csv_path=OUTPUT_CSV):
     """Watch the active WoW combat log, detect encounter boundaries using the
     same GUID state machine as detect_encounters(), and append each completed
@@ -1003,42 +1118,20 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
         """Parse buffered lines, stamp with the next combat_id, append to CSV."""
         nonlocal combat_id, current_char_name
         combat_id += 1
-        rows = []
+        parsed_lines = []
         for raw_line in line_buffer:
             parsed, current_char_name = parse_combat_line(
                 raw_line.strip(), current_char_name
             )
-            if not parsed:
-                continue
-            try:
-                evt_dt = datetime.strptime(
-                    parsed.get("timestamp", ""), "%m/%d/%Y %H:%M:%S.%f"
-                )
-            except Exception:
-                evt_dt = None
-            # Only stamp rows that fall inside the encounter window.
-            if evt_dt and enc_start <= evt_dt <= close_dt:
-                cid = combat_id
-            else:
-                cid = 0
-                rows.append(
-                    [
-                        cid,
-                        parsed.get("timestamp", ""),
-                        parsed.get("event", ""),
-                        parsed.get("source", ""),
-                        parsed.get("target", ""),
-                        parsed.get("spell_name", ""),
-                        parsed.get("amount", 0),
-                        parsed.get("effective_amount", 0),
-                        parsed.get("type", ""),
-                        encounter_zone_id,
-                        encounter_zone_name,
-                        parsed.get("spell_id", 0),
-                    ]
-                )
-        # Drop out-of-combat rows (cid=0) — they carry no combat-meter value.
-        rows = [r for r in rows if r[0] != 0]
+            parsed_lines.append(parsed)
+        rows = _build_encounter_rows(
+            parsed_lines,
+            enc_start,
+            close_dt,
+            combat_id,
+            encounter_zone_id,
+            encounter_zone_name,
+        )
         if rows:
             need_header = not os.path.exists(csv_path)
             with open(csv_path, "a", encoding="utf-8", newline="") as f:
@@ -1069,8 +1162,9 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
         return
 
     print(f"Watching: {log_path}")
-    log_fh = open(log_path, "r", encoding="utf-8")
-    log_fh.seek(0, 2)  # Jump to end — ignore historical lines
+    # Resume from the CSV's max timestamp so combat written before tail mode
+    # started is not silently discarded.
+    log_fh, pending = _open_log_resuming(log_path, csv_path)
     last_log_check = time.monotonic()
 
     try:
@@ -1083,14 +1177,15 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                     print(f"  New log detected: {latest}")
                     log_fh.close()
                     log_path = latest
-                    log_fh = open(log_path, "r", encoding="utf-8")
-                    log_fh.seek(0, 2)
+                    # Also resume the new log from the CSV's max timestamp.
+                    log_fh, pending = _open_log_resuming(log_path, csv_path)
                     # Compress the logs that are no longer active.
                     archive_old_logs()
 
-            new_lines = log_fh.readlines()
+            batch = pending + log_fh.readlines()
+            pending = []
 
-            if not new_lines:
+            if not batch:
                 # No new data — check wall-clock timeout on any open encounter.
                 if encounter_start is not None and last_hostile_dt is not None:
                     elapsed = (datetime.now() - last_hostile_dt).total_seconds()
@@ -1100,7 +1195,7 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                 time.sleep(0.5)
                 continue
 
-            for line in new_lines:
+            for line in batch:
                 # ── Detect zone changes ──
                 _zc = _parse_zone_change_line(line)
                 if _zc is not None:
