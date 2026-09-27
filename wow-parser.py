@@ -457,40 +457,47 @@ def _parse_encounter_event(line):
         }
 
 
-def extract_boss_kills(lines):
-    """Scan log lines for ENCOUNTER_START/END pairs.
+class BossKillTracker:
+    """Incremental extractor for scripted boss encounters (ENCOUNTER_START/END).
 
-    Returns a list of dicts::
+    Feed raw log lines one at a time via ``feed``; each completed START→END
+    pair is appended to ``records`` as a sidecar dict::
 
         {boss_name, start_ts, end_ts, kill_flag, zone_id}
 
-    kill_flag=1 → boss killed; 0 → wipe/reset.
-    Timestamps are strings in the same format as the CSV (``%m/%d/%Y %H:%M:%S.%f``).
+    kill_flag=1 → boss killed; 0 → wipe/reset. Timestamps are formatted as
+    ``%m/%d/%Y %H:%M:%S.%f`` (same as the CSV). Collecting kills incrementally
+    lets the batch export paths stamp them while already streaming the lines for
+    the CSV, removing a separate re-read pass over every log file.
     """
-    boss_kills = []
-    open_boss = None  # {boss_name, start_dt, zone_id}
-    for line in lines:
+
+    def __init__(self):
+        self.records = []
+        self._open_boss = None  # {boss_name, start_dt, zone_id}
+
+    def feed(self, line):
+        """Process one raw log line, updating internal encounter state."""
         ev = _parse_encounter_event(line)
         if ev is None:
-            continue
+            return
         if ev["event"] == "START":
-            open_boss = {
+            self._open_boss = {
                 "boss_name": ev["boss_name"],
                 "start_dt": ev["dt"],
                 "zone_id": ev["zone_id"],
             }
-        elif ev["event"] == "END" and open_boss is not None:
-            boss_kills.append(
+        elif ev["event"] == "END" and self._open_boss is not None:
+            ob = self._open_boss
+            self.records.append(
                 {
-                    "boss_name": open_boss["boss_name"],
-                    "start_ts": open_boss["start_dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
+                    "boss_name": ob["boss_name"],
+                    "start_ts": ob["start_dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
                     "end_ts": ev["dt"].strftime("%m/%d/%Y %H:%M:%S.%f"),
                     "kill_flag": ev.get("kill_flag", 0),
-                    "zone_id": open_boss["zone_id"],
+                    "zone_id": ob["zone_id"],
                 }
             )
-            open_boss = None
-    return boss_kills
+            self._open_boss = None
 
 
 def _write_boss_kills(boss_kills, path=BOSS_KILLS_PATH, mode="w"):
@@ -728,7 +735,9 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
         encounters = detect_encounters(infile)
     print(f"  Detected {len(encounters)} encounter(s).")
 
-    # Pass 2 – extract player events and stamp each with the right combat_id.
+    # Pass 2 – extract player events and stamp each with the right combat_id,
+    # while also collecting boss-kill sidecar records (no separate re-read pass).
+    boss_tracker = BossKillTracker()
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(header)
@@ -736,6 +745,7 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
         current_char_name = None
         with open(filepath, "r", encoding="utf-8") as infile:
             for line in infile:
+                boss_tracker.feed(line)
                 parsed_data, current_char_name = parse_combat_line(
                     line.strip(), current_char_name
                 )
@@ -772,10 +782,7 @@ def export_csv(filepath, csv_path=OUTPUT_CSV):
                     ]
                 )
 
-    # Pass 3 – extract boss kill events and write sidecar file.
-    with open(filepath, "r", encoding="utf-8") as infile:
-        boss_kills = extract_boss_kills(infile)
-    _write_boss_kills(boss_kills)
+    _write_boss_kills(boss_tracker.records)
 
 
 def _backup_file(path, backup_dir=CSV_BACKUP_DIR, keep=MAX_CSV_BACKUPS):
@@ -870,7 +877,9 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
     encounters = detect_encounters(_all_lines())
     print(f"  Detected {len(encounters)} encounter(s) across {len(filepaths)} file(s).")
 
-    # Pass 2 – extract player events and stamp each with the right combat_id.
+    # Pass 2 – extract player events and stamp each with the right combat_id,
+    # while also collecting boss-kill sidecar records (no separate re-read pass).
+    boss_tracker = BossKillTracker()
     with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(header)
@@ -880,6 +889,7 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
             try:
                 with _open_log(fp) as infile:
                     for line in infile:
+                        boss_tracker.feed(line)
                         parsed_data, current_char_name = parse_combat_line(
                             line.strip(), current_char_name
                         )
@@ -917,9 +927,7 @@ def export_csv_from_files(filepaths, csv_path=OUTPUT_CSV):
             except Exception:
                 continue
 
-    # Pass 3 – extract boss kill events and write sidecar file.
-    boss_kills = extract_boss_kills(_all_lines())
-    _write_boss_kills(boss_kills)
+    _write_boss_kills(boss_tracker.records)
 
 
 def _read_max_combat_id(csv_path):
