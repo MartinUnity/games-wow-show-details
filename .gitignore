@@ -1,5 +1,7 @@
 __pycache__
 testdata/
+# Real combat data (contains real character names — never commit)
+wow-data/
 parsed_combat_data.csv.bak*
 parsed_combat_data.csv
 data/sidecar/boss_kills.jsonl
@@ -12,6 +14,12 @@ htmx/
 # Ignore archived combat logs stored under data/logs
 data/logs/*.txt.gz
 
+# Derived SQLite store (rebuildable via storage.sync / make devdata)
+data/combat.db*
+
 # runme.sh runtime artifacts
 runme.logs/
 runme.pids/
+
+# Phase 4: SPA tooling (read-only ~/.npm workaround)
+.npm-cache/

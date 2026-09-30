@@ -1,15 +1,21 @@
 """
 utils/data_io.py
 ────────────────
-All file I/O helpers and the @st.cache_data CSV loader.
-No Streamlit rendering commands — only data loading/saving utilities.
+All file I/O helpers and the bare CSV/SQLite loader.
+
+Streamlit-free by design (Phase 2 of docs/MIGRATION_PLAN.md): plain
+functions callable from the FastAPI layer. (The Streamlit app and its
+caching seam ``utils/st_compat.py`` were retired in Phase 5.)
+
+``load_csv`` serves rows from the derived SQLite store (storage/) by default
+once it exists; set ``WOW_USE_SQLITE=0`` to force the CSV. The CSV stays the
+source of truth; the DB is refreshed by the parser hooks / ``make db``.
 """
 
 import json
 import os
 
 import pandas as pd
-import streamlit as st
 
 from config import (  # noqa: F401 – re-exported for backward-compat imports
     BOSS_KILLS_PATH,
@@ -116,10 +122,28 @@ def _fmt_compact_amount(n: float) -> str:
 # ── CSV loader ────────────────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=3)
 def load_csv(path=CSV_PATH):
-    """Load the pre-processed CSV.  TTL=3s so new tail-mode encounters are
-    visible on the next auto-refresh cycle without needing a manual cache clear."""
+    """Load the pre-processed event table (bare — no caching).
+
+    By default (when ``path`` is the canonical CSV and the derived store
+    exists; ``WOW_USE_SQLITE=0`` forces the CSV) the rows come from the
+    SQLite store instead of re-reading the file. The returned frame is shaped
+    exactly like the CSV path's: the 12 CSV columns plus ``timestamp_dt``.
+    """
+    import config as _cfg
+
+    # SQLite is the default path once the derived store exists; set
+    # WOW_USE_SQLITE=0 to force the CSV. (=1 keeps working as an explicit on.)
+    if os.environ.get("WOW_USE_SQLITE", "1") != "0" and path == _cfg.CSV_PATH:
+        if os.path.exists(_cfg.DB_PATH):
+            from storage import queries
+
+            df = queries.load_events(db_path=_cfg.DB_PATH)
+            # pd.read_csv maps empty fields to NaN; SQLite gives "" —
+            # align so downstream filters behave identically.
+            for col in ("source", "target", "spell_name", "zone_name"):
+                df[col] = df[col].where(df[col] != "")
+            return df
     df = pd.read_csv(path)
     df["timestamp_dt"] = pd.to_datetime(df["timestamp"], format="%m/%d/%Y %H:%M:%S.%f", errors="coerce")
     # Backward-compat: older CSVs lack zone columns
@@ -196,7 +220,6 @@ def save_note(combat_id, note, path=NOTES_PATH):
 # ── Character counts ──────────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=30)
 def compute_character_counts(path=CSV_PATH):
     """Return a DataFrame of (source, combats) sorted by encounter count desc."""
     df = load_csv(path)

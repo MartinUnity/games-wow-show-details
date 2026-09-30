@@ -2,16 +2,17 @@
 utils/data_engine.py
 ────────────────────
 The 5 most complex pure data-processing functions.
-All functions are Streamlit-agnostic (no rendering commands).
-@st.cache_data decorators are allowed here — they only wrap functions,
-they do not trigger page rendering.
+
+Streamlit-free by design (Phase 2 of docs/MIGRATION_PLAN.md): plain
+functions callable from the FastAPI layer. (The Streamlit app and its
+caching seam ``utils/st_compat.py`` were retired in Phase 5.)
 """
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 
-from utils.data_io import CSV_PATH, load_boss_kills, load_csv, load_healer_spells
+from utils import data_io
+from utils.data_io import CSV_PATH, load_boss_kills, load_csv
 
 # ── 1. Time-series builder ────────────────────────────────────────────────────
 
@@ -120,11 +121,14 @@ def spell_aggregates(combat_df, event_type, top_n=10):
 # ── 3. Totals summary (per-target rolled up across all combats) ───────────────
 
 
-@st.cache_data(ttl=30)
-def compute_totals_summary(path=CSV_PATH, character=None):
-    """Compute aggregated statistics across all combats from CSV."""
+def compute_totals_summary(path=CSV_PATH, character=None, df=None):
+    """Compute aggregated statistics across all combats from CSV.
+
+    ``df`` (optional): pre-loaded event frame — skips the CSV/DB read when
+    the caller already holds the data (e.g. the FastAPI layer).
+    """
     try:
-        df = load_csv(path)
+        df = df if df is not None else load_csv(path)
     except Exception:
         return pd.DataFrame(), {}
 
@@ -197,11 +201,12 @@ def compute_totals_summary(path=CSV_PATH, character=None):
 # ── 4. All-encounters stats (spell + encounter aggregates) ────────────────────
 
 
-@st.cache_data(ttl=3)
-def compute_all_encounters_stats(path=CSV_PATH, character=None):
-    """Aggregate spell usage and per-encounter metrics across all combat encounters."""
+def compute_all_encounters_stats(path=CSV_PATH, character=None, df=None):
+    """Aggregate spell usage and per-encounter metrics across all combat
+    encounters. ``df`` (optional): pre-loaded event frame — skips the
+    CSV/DB read when the caller already holds the data."""
     try:
-        df = load_csv(path)
+        df = df if df is not None else load_csv(path)
     except Exception:
         return {}, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
@@ -303,12 +308,14 @@ def compute_all_encounters_stats(path=CSV_PATH, character=None):
 # ── 5. Run grouper (zone + time-gap clustering with boss-kill join) ───────────
 
 
-@st.cache_data(ttl=3)
-def compute_runs(path=CSV_PATH, gap_minutes=20):
+def compute_runs(path=CSV_PATH, gap_minutes=20, df=None):
     """Group encounters into 'runs' based on zone name and time continuity.
 
     A new run begins when the zone name changes OR when the gap between
     consecutive encounter start times exceeds *gap_minutes*.
+
+    ``df`` (optional): pre-loaded event frame — skips the CSV/DB read when
+    the caller already holds the data.
 
     Returns
     -------
@@ -442,7 +449,9 @@ def compute_runs(path=CSV_PATH, gap_minutes=20):
     # ── Run-level role classification using healer sidecar ───────────────
     # Load healer-identifying spells (sidecar may contain numeric ids and/or names)
     try:
-        healer_sidecar = load_healer_spells()
+        # Module-qualified on purpose: lets tests monkeypatch
+        # data_io.load_healer_spells regardless of import order.
+        healer_sidecar = data_io.load_healer_spells()
     except Exception:
         healer_sidecar = {}
 

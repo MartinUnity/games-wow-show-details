@@ -30,6 +30,8 @@ def test_single_healer_spell_marks_run(tmp_path, monkeypatch):
         return {"Holy_Priest": [healer_spell_id]}
 
 
+    # compute_runs resolves this via the data_io module at call time, so
+    # patching the module attribute works regardless of import order.
     monkeypatch.setattr(data_io, "load_healer_spells", _fake_sidecar)
 
     # Now run compute_runs against our temporary CSV

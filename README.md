@@ -1,121 +1,148 @@
 # WoW Combat Viewer
 
-A tool for parsing World of Warcraft combat logs and visualizing your gameplay statistics with detailed encounter analysis.
+A tool for parsing World of Warcraft combat logs and visualizing your gameplay
+statistics with detailed encounter analysis.
 
 ## 🎯 Overview
 
-This project parses World of Warcraft combat log files to extract player damage, healing, and ability usage data. It provides an interactive Streamlit web interface that lets you review your encounters, analyze your DPS/HPS performance, compare characters, and track boss kills across multiple zones.
+The parser (`wow-parser.py`) reads raw WoW combat logs into a CSV plus small
+sidecar files. A **FastAPI + SQLite + React SPA** stack serves an interactive
+web UI: review encounters, analyze DPS/HPS, compare characters and bosses,
+and follow live combat over Server-Sent Events.
+
+```
+WoW Logs ──> wow-parser.py (tail mode = live ingester)
+                │  parsed_combat_data.csv + data/sidecar/*.jsonl|json
+                ▼
+         storage/   (SQLite — derived, always rebuildable from the CSV)
+                ▼
+         api/       (FastAPI: REST /api/* + SSE /api/events; serves web/dist)
+                ▼
+         web/       (React + TypeScript SPA: ECharts + TanStack Table)
+```
+
+The CSV stays the source of truth; the SQLite store is derived from it
+(rebuildable at any time with `make db`) and is the default read path once
+it exists (`WOW_USE_SQLITE=0` forces the CSV).
 
 ## 📁 Project Structure
 
 ```
 games-wow-show-details/
-├── wow-parser.py        # Combat log parser script
-├── streamlit_app.py     # Streamlit web application
-├── parsed_combat_data.csv  # Output CSV with parsed combat data
-├── boss_kills.jsonl     # Boss kill records (sidecar file)
-├── hidden_combats.json  # Hidden encounter IDs
-├── requirements.txt      # Python dependencies
-└── README.md            # This file
+├── wow-parser.py            # Combat log parser (stdlib-only; the "crown jewel")
+├── api/                     # FastAPI app: REST + SSE endpoints
+├── storage/                 # SQLite schema, CSV→DB sync, query layer
+├── web/                     # React SPA (Vite + TypeScript)
+├── utils/                   # Streamlit-free data compute + IO helpers
+├── config.py                # Paths & tunables (WOW_* env overrides)
+├── runme.sh                 # Process supervisor (parser / api / web)
+├── Makefile                 # fixture / devdata / db / web targets
+├── parsed_combat_data.csv   # Output CSV (gitignored — personal data)
+└── data/sidecar/            # boss_kills.jsonl, notes, hidden, healer spells
 ```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.8+
-- Steam World of Warcraft installed (for combat log access)
-- Write access to your WoW Logs directory (see Environment configuration below)
+- Python 3.10+ and Node 18+
+- World of Warcraft installed (for combat log access)
+- Write access to your WoW Logs directory (see Environment configuration)
 
 ### Installation
 
-1. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+make web-install        # npm install for the SPA
+make web-build          # production bundle → web/dist
+```
 
-2. **Initial setup (parse all historical logs):**
-   ```bash
-   python wow-parser.py --full-import
-   ```
+### One-off import + run
 
-3. **Start the web interface:**
-   ```bash
-   streamlit run streamlit_app.py
-   ```
+```bash
+python wow-parser.py --full-import   # parse all historical logs (→ CSV + SQLite)
+./runme.sh start                     # starts parser (tail mode) + api
+```
+
+Open **http://127.0.0.1:8000** — the API serves the built SPA.
+
+### Development (hot-reload SPA)
+
+```bash
+./runme.sh start parser api          # backend + parser
+./runme.sh start web                 # vite dev server on :5173 (proxies /api)
+# → http://127.0.0.1:5173
+```
+
+No real logs on this machine? `make fixture` builds a small deterministic
+dataset (6 encounters); `make devdata` uses the real data in `wow-data/`.
 
 ## 📊 Features
 
 ### Combat Log Parsing
 
-- **Real-time encounter detection** using GUID-based state machine tracking active enemies
+- **Real-time encounter detection** using a GUID-based state machine
 - **Player action extraction** for damage, healing, and spell usage
-- **Encounter boundaries** automatically detected (enemy deaths, wipes, flee, timeout)
+- **Encounter boundaries** (enemy deaths, wipes, flee, timeout)
 - **Boss kill tracking** via ENCOUNTER_START/END events
 - **Zone change monitoring** for run grouping
 
 ### Web Dashboard Views
 
-| View                     | Description                                                                        |
-| ------------------------ | ---------------------------------------------------------------------------------- |
-| **Combat Viewer**        | Live encounter details with DPS/HPS charts, ability breakdowns, rotation timelines |
-| **Runs**                 | Encounters grouped by zone with boss kill tracking                                 |
-| **All Encounters**       | Aggregated stats across all combats with rolling averages                          |
-| **Totals**               | Summary statistics per target and ability                                          |
-| **Character Comparison** | Side-by-side comparison of multiple characters                                     |
+| View                     | Description                                                    |
+| ------------------------ | -------------------------------------------------------------- |
+| **Combat Viewer**        | DPS/HPS timeline, ability breakdowns, rotation timeline, TTK/overkill, notes, hide, CSV/GIF export |
+| **Runs**                 | Encounters grouped by zone + time gaps, per-participant stats  |
+| **All Encounters**       | Every combat with session activity and ability breakdown       |
+| **Totals**               | Summary statistics per target and ability                      |
+| **Character Comparison** | Side-by-side comparison of characters                          |
+| **Boss Comparison**      | Per-boss DPS across encounters                                 |
 
 ### Key Capabilities
 
-- ⏱️ **Real-time live following** - Automatically updates when you play
-- 🎯 **DPS/HPS tracking** - Per-second granularity with smoothing options
-- ✨ **Ability analytics** - Top spells by damage/healing with percentage breakdowns
-- 👥 **Character comparison** - Compare multiple characters' performance
-- 🏆 **Boss kill tracking** - Track which bosses were defeated in each run
-- 🙈 **Hidden encounters** - Optionally hide specific combats from the list
-- 📍 **Zone/run grouping** - Automatically groups encounters by zone and time gaps
+- ⏱️ **Live follow** — SSE stream pushes `encounter_closed`; the SPA auto-selects the new combat
+- 🎯 **DPS/HPS tracking** — per-second granularity, resample + smoothing controls
+- ✨ **Ability analytics** — top spells by damage/healing with percentage breakdowns
+- 🏆 **Boss kill tracking** — which bosses fell in which run
+- 🙈 **Hidden encounters** & per-encounter notes (persisted sidecars + SQLite)
+- 🔗 **Deep links** — `?view=…&combat=…` URLs are shareable
+- 📤 **Exports** — per-combat CSV and animated GIF damage replay
 
-## 🛠️ Usage
-
-### Parser Commands
+## 🛠️ Commands
 
 ```bash
-# Parse latest combat log and export to CSV
-python wow-parser.py --export-csv
+# Parser
+python wow-parser.py                  # tail mode (live)
+python wow-parser.py --export-csv     # parse newest log
+python wow-parser.py --full-import    # parse all historical logs
 
-# Parse all historical logs (with backup)
-python wow-parser.py --full-import
+# Processes (parser / api / web)
+./runme.sh start|stop|restart|status|logs [name]
 
-# Test parser output (summary or debug mode)
-python wow-parser.py --test-parser summary
-python wow-parser.py --test-parser debug
+# Data
+make fixture        # synthetic 6-encounter dataset (hermetic)
+make devdata        # place real data from wow-data/ where the app expects
+make db             # rebuild the derived SQLite store
 
-# Live tail mode (continuous monitoring)
-python wow-parser.py
+# SPA
+make web-dev        # vite dev server (:5173)
+make web-build      # production bundle (served by the API at /)
+make web-test       # vitest
+
+# Tests
+.venv/bin/python -m pytest tests/ -q
 ```
-
-### Streamlit Views
-
-- Launch with: `streamlit run streamlit_app.py`
-- Access at default port 8501 in browser
-- Sidebar controls for character filtering, resampling, and view selection
-
-## 📈 Visualizations
-
-The application includes:
-- **Line charts** for DPS/HPS over time (configurable resample intervals)
-- **Bar charts** for ability breakdowns by damage/healing type
-- **Pie charts** showing damage/heal share per participant
-- **Scatter swimlanes** for rotation timeline visualization
-- **AgGrid tables** with client-side filtering and sorting
 
 ## ⚙️ Configuration
 
-Key configuration locations:
-- `config.py` → `LOG_DIR` is now environment-configurable via `WOW_LOG_DIR` (preferred)
-- `streamlit_app.py` → various file paths (CSV, hidden combats, boss kills)
+- `WOW_LOG_DIR` — your World of Warcraft `Logs` folder (parser)
+- `WOW_USE_SQLITE` — `0` forces the plain CSV; otherwise (default) the
+  derived SQLite store is used once it exists (`make db`)
+- `WOW_BASE_DIR` — override the data directory (default: repo root)
+- `WOW_SSE_POLL_S` — SSE watermark poll interval (default 1.5 s)
+- All paths/tunables live in `config.py`
 
-Environment configuration
-
-Set `WOW_LOG_DIR` to point at your World of Warcraft Logs folder so the parser can find the combat logs. Two common examples:
+Environment examples for `WOW_LOG_DIR`:
 
 Linux (bash):
 
@@ -127,83 +154,57 @@ Windows (PowerShell):
 
 ```powershell
 $env:WOW_LOG_DIR = 'C:\Program Files (x86)\World of Warcraft\_retail_\Logs'
-# or set permanently via System > Advanced > Environment Variables
-```
-
-Then run the parser / UI as usual:
-
-```bash
-python wow-parser.py --full-import
-streamlit run streamlit_app.py
 ```
 
 Privacy note
 ------------
 
-This repository previously included locally parsed combat CSVs and sidecar files derived from gameplay logs (timestamps, player/server identifiers). To avoid accidentally publishing personal gameplay data, those files are now ignored by the repository by default. Keep any raw or exported logs out of the tracked tree — the project expects you to run the parser locally to generate `parsed_combat_data.csv` and any sidecar artifacts.
+Parsed CSVs, sidecar files and `wow-data/` are **gitignored** — they contain
+personal gameplay data (names, timestamps, server identifiers). Keep raw and
+exported logs out of the tracked tree; run the parser locally.
 
 ## 📝 Data Format
 
-### Combat Log Parser Output (`parsed_combat_data.csv`)
+### `parsed_combat_data.csv`
 
 | Column           | Description                                  |
 | ---------------- | -------------------------------------------- |
-| combat_id        | Unique encounter identifier                  |
+| combat_id        | Unique encounter identifier (0 = out of combat) |
 | timestamp        | Event timestamp (MM/DD/YYYY HH:MM:SS.ffffff) |
-| event            | Action type (damage, heal, swing, etc.)      |
-| source           | Player/NPC that performed action             |
+| event            | Action type (SPELL_DAMAGE, SWING_HEAL, …)    |
+| source           | Unit that performed the action               |
 | target           | Target of the action                         |
 | spell_name       | Spell/ability used (if applicable)           |
 | amount           | Raw damage/healing value                     |
-| effective_amount | Actual damage dealt after absorbs/misses     |
-| type             | Category (damage, heal, other)               |
+| effective_amount | Damage/healing after absorbs/misses          |
+| type             | damage / heal / absorb / other               |
 | zone_id          | Zone identifier                              |
 | zone_name        | Zone name                                    |
+| spell_id         | Spell identifier                             |
 
-### Boss Kills (`boss_kills.jsonl`)
+### Sidecars (`data/sidecar/`)
 
-```json
-{"boss_name": "Ragnaros", "start_ts": "...", "end_ts": "...", "kill_flag": 1, "zone_id": 123}
-```
+- `boss_kills.jsonl` — one JSON object per boss encounter
+- `encounter_notes.jsonl` — per-combat notes
+- `hidden_combats.json` — list of hidden combat ids
+- `healer_spells.json` — spec → spell-id mapping for HPS attribution
 
-## 🔧 Advanced Features
+The parser owns these files (the SPA writes through the API, which keeps the
+files and the SQLite mirror in sync — the sidecar files remain the canonical
+sidecar store, SQLite is derived).
 
-### Encounter Detection Algorithm
+### Replay logs
 
-The parser uses a GUID-based state machine to track combat:
-- Opens when friendly unit damages enemy or vice versa
-- Grows as additional enemies join
-- Closes when all enemies die, player dies, flee occurs, or timeout expires (8s default)
-
-### Live Mode
-
-In tail mode (`python wow-parser.py` without flags):
-- Watches the latest combat log for new events
-- Flushes completed encounters to CSV
-- Streamlit refreshes every 10 s (configurable via `LIVE_REFRESH_INTERVAL_MS` in `config.py`) to show live updates
-- Ctrl+C to stop monitoring
-
-## 📋 Requirements
-
-```txt
-altair>=4.0.0
-pandas>=1.0.0
-streamlit>=1.0.0
-streamlit_autorefresh
-streamlit-aggrid
-```
+Drop archived raw logs (`.txt` or `.txt.gz`) into `data/logs/` to enable the
+positional replay feature for encounters covered by those logs.
 
 ## ⚠️ Notes
 
-- Combat logs are stored in your Steam directory
-- The parser handles multiple log files (e.g., when you restart the game)
-- Hidden encounters are persisted to `data/sidecar/hidden_combats.json`
-- CSV backups are created automatically during full imports
+- The SQLite store is **derived, never canonical** — rebuild with `make db`.
+- CSV backups are created automatically during full imports.
+- The old Streamlit app was retired in the FastAPI/SPA migration
+  (see `docs/MIGRATION_PLAN.md`).
 
 ## 📄 License
 
 This tool is for personal use with your own World of Warcraft combat logs.
-
----
-
-Built with ❤️ for WoW players who want detailed encounter analysis.

@@ -1,5 +1,9 @@
 # TODO
 
+> **Superseded (2026-09-28).** This Streamlit-era TODO (clickable run rows
+> → Combat Viewer deep link) shipped in the SPA migration: the Runs view
+> links each encounter to `?view=Combat+Viewer&combat=<id>`.
+
 - Add support for clicking on a specific encounter in "Views" and having it open in "Combat Viewer" for that particular run so one can see all details of a single encounter battle
 
 1. Implementation details

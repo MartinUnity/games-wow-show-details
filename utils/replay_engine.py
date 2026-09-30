@@ -14,7 +14,6 @@ import tempfile
 from datetime import datetime
 
 import pandas as pd
-import streamlit as st
 
 
 # Matches the session-start stamp in a log filename, e.g. WoWCombatLog-030526_164213
@@ -56,12 +55,12 @@ def find_log_for_combat(start_dt, end_dt, log_dir):
     return best_path
 
 
-@st.cache_resource(show_spinner=False)
 def decompress_log(gz_path: str) -> str:
-    """Gunzip a ``.txt.gz`` combat log to a temp ``.txt`` (cached per source).
+    """Gunzip a ``.txt.gz`` combat log to a temp ``.txt``.
 
-    Non-gz paths are returned unchanged. Cached so the expensive gunzip runs
-    once per file per process, not on every 3-second app rerun.
+    Non-gz paths are returned unchanged. Bare function — the API layer
+    (``api.main._decompress_cached``) adds per-process caching so the
+    expensive gunzip runs once per file.
     """
     if not gz_path.endswith(".gz"):
         return gz_path
@@ -72,13 +71,13 @@ def decompress_log(gz_path: str) -> str:
     return tmp
 
 
-@st.cache_data(show_spinner=False)
 def generate_replay_manuscript(start_dt, end_dt, log_file_path):
     """
     Scans a plain-text combat log for positional data within [start_dt, end_dt].
     Returns a JSON string containing the 'manuscript' for the JS player, or None
-    if the log is missing or no positional events are found. Cached, because the
-    log scan is expensive and the app reruns every few seconds.
+    if the log is missing or no positional events are found.
+    Bare function — the API layer caches the decompressed log text per
+    file, because the log scan is expensive.
     """
     if (
         start_dt is None
