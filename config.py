@@ -40,6 +40,9 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "log
 CSV_PATH = "parsed_combat_data.csv"
 # Sidecar directory under repo data/sidecar — convenience paths for services and UIs
 SIDECAR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sidecar")
+# Derived SQLite store (storage/ layer). Rebuildable from the CSV at any time
+# via storage.sync.sync_from_csv — the CSV stays the source of truth.
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "combat.db")
 BOSS_KILLS_PATH = os.path.join(SIDECAR_DIR, "boss_kills.jsonl")
 NOTES_PATH = os.path.join(SIDECAR_DIR, "encounter_notes.jsonl")
 HIDDEN_PATH = os.path.join(SIDECAR_DIR, "hidden_combats.json")
@@ -82,5 +85,5 @@ def data_path(filename: str) -> str:
     return os.path.join(BASE_DIR, filename)
 
 
-# Common paths used by wow-parser.py and streamlit_app.py
+# Common paths used by wow-parser.py and the FastAPI/SPA layer
 PARSED_COMBAT_DATA = data_path("parsed_combat_data.csv")

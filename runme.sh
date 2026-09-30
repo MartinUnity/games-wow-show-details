@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 
-# Supervisor script to start/stop/status the two project processes:
+# Supervisor script to start/stop/status the project processes:
 # - parser (wow-parser.py, tail mode)
-# - streamlit (streamlit_app.py)
+# - api (uvicorn api.main:app, :8000)     [Phase 3 FastAPI + SSE; serves the
+#                                          built SPA from web/dist]
+# - web (vite dev server, :5173)          [Phase 4 SPA dev mode, proxies /api]
+#
+# (The Streamlit app was retired in Phase 5; `make web-build` + the `api`
+# process is the single-process production path.)
 #
 # Usage: ./runme.sh start|stop|restart|status|logs [name]
-# where [name] is one of: parser, streamlit
+# where [name] is one of: parser, api, web
 
 set -euo pipefail
 
@@ -73,13 +78,18 @@ if [[ -d "$VENV_SITE" ]]; then
 	PYTHON_PATH="$PYTHON_PATH:$VENV_SITE"
 fi
 CMD[parser]="cd \"$BASE_DIR\" && PYTHONPATH=\"$PYTHON_PATH\" $PYTHON $BASE_DIR/wow-parser.py"
-CMD[streamlit]="cd \"$BASE_DIR\" && PYTHONPATH=\"$PYTHON_PATH\" $PYTHON -m streamlit run $BASE_DIR/streamlit_app.py --server.headless true"
+# ~/.npm may be read-only; the SPA uses a repo-local npm cache (see Makefile).
+export npm_config_cache="${npm_config_cache:-$BASE_DIR/.npm-cache}"
+CMD[api]="cd \"$BASE_DIR\" && PYTHONPATH=\"$PYTHON_PATH\" $PYTHON -m uvicorn api.main:app --host 127.0.0.1 --port 8000"
+CMD[web]="cd \"$BASE_DIR/web\" && npm run dev -- --host 127.0.0.1 --port 5173"
 
 PIDFILE[parser]="$PID_DIR/parser.pid"
-PIDFILE[streamlit]="$PID_DIR/streamlit.pid"
+PIDFILE[api]="$PID_DIR/api.pid"
+PIDFILE[web]="$PID_DIR/web.pid"
 
 LOGFILE[parser]="$LOG_DIR/parser.log"
-LOGFILE[streamlit]="$LOG_DIR/streamlit.log"
+LOGFILE[api]="$LOG_DIR/api.log"
+LOGFILE[web]="$LOG_DIR/web.log"
 
 is_running() {
 	local pidfile="$1"
@@ -151,19 +161,19 @@ status_one() {
 }
 
 start_all() {
-	for n in "parser" "streamlit"; do
+	for n in "parser" "api"; do
 		start_one "$n"
 	done
 }
 
 stop_all() {
-	for n in "streamlit" "parser"; do
+	for n in "api" "parser"; do
 		stop_one "$n"
 	done
 }
 
 status_all() {
-	for n in "parser" "streamlit"; do
+	for n in "parser" "api" "web"; do
 		status_one "$n"
 	done
 }
@@ -177,7 +187,7 @@ Commands:
 	restart [name]  Restart a process or all if name omitted
 	status [name]   Show status of a process or all if name omitted
 	logs [name]     Tail the log for a process (requires name)
-Names: parser, streamlit
+Names: parser, api, web
 EOF
 }
 

@@ -500,6 +500,24 @@ class BossKillTracker:
             self._open_boss = None
 
 
+def _sync_sqlite_fail_soft(csv_path, full: bool):
+    """Keep the derived SQLite store (storage/) in sync after a CSV write.
+
+    Fail-soft by design: the DB is always rebuildable, so a sync problem must
+    never break parsing/export. ``full=True`` → transactional rebuild
+    (batch imports); otherwise a cheap byte-offset append (tail-mode flush).
+    """
+    try:
+        if full:
+            from storage.sync import sync_from_csv
+            sync_from_csv(csv_path)
+        else:
+            from storage.sync import incremental_append
+            incremental_append(csv_path)
+    except Exception as e:
+        print(f"Warning: SQLite sync skipped: {e}")
+
+
 def _write_boss_kills(boss_kills, path=BOSS_KILLS_PATH, mode="w"):
     """Write boss kill records to a JSON-lines sidecar file."""
     try:
@@ -1140,6 +1158,7 @@ def run_tail_mode(csv_path=OUTPUT_CSV):
                     writer.writerow(header)
                 writer.writerows(rows)
             print(f"  Encounter {combat_id}: flushed {len(rows)} rows → {csv_path}")
+            _sync_sqlite_fail_soft(csv_path, full=False)
         else:
             print(f"  Encounter {combat_id}: no player events — skipping.")
             combat_id -= 1  # don't burn an id for empty encounters
@@ -1356,11 +1375,13 @@ if __name__ == "__main__":
         # backup existing CSV
         _backup_file(OUTPUT_CSV)
         export_csv_from_files(files_sorted, csv_path=OUTPUT_CSV)
+        _sync_sqlite_fail_soft(OUTPUT_CSV, full=True)
         exit(0)
 
     # If export requested, run export and exit (don't enter tail mode).
     if args.export_csv:
         export_csv(latest_log)
+        _sync_sqlite_fail_soft(OUTPUT_CSV, full=True)
         exit(0)
 
     if args.test_parser == "debug":

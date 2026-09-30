@@ -1,0 +1,15 @@
+# Minimal ruff config for the migration work.
+#
+# The legacy code (utils/, wow-parser.py) predates this config and is
+# intentionally left un-linted here — lint scope is the new `api/` and
+# `storage/` packages.
+#
+# storage/ swallows malformed sidecar rows on purpose (fail-soft design:
+# a corrupt JSONL line must never block an incremental DB sync), and its
+# naive timestamps are deterministic local-time epochs by design.
+
+[lint]
+extend-select = ["F", "E", "W", "BLE", "S", "DTZ", "FLY"]
+
+[lint.per-file-ignores]
+"storage/*" = ["BLE001", "S110", "DTZ007", "FLY002"]

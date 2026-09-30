@@ -1,0 +1,328 @@
+:root {
+  color-scheme: dark;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: #161616;
+  color: #e6e6e6;
+  font-size: 14px;
+}
+
+.app {
+  display: flex;
+  height: 100%;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────── */
+.sidebar {
+  width: 250px;
+  min-width: 250px;
+  background: #1c1c1c;
+  border-right: 1px solid #333;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.brand {
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffb74d;
+}
+
+nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item {
+  text-align: left;
+  background: none;
+  border: none;
+  color: #ccc;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.nav-item:hover {
+  background: #2a2a2a;
+}
+
+.nav-item.active {
+  background: #333;
+  color: #fff;
+  font-weight: 600;
+}
+
+.side-section {
+  border-top: 1px solid #2e2e2e;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.side-label {
+  font-size: 12px;
+  color: #999;
+}
+
+/* ── Main ────────────────────────────────────────────────────────── */
+.main {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.pad {
+  padding: 10px 14px;
+}
+
+.pad-top {
+  padding-top: 10px;
+}
+
+.center {
+  text-align: center;
+}
+
+h2 {
+  margin: 14px 0 8px;
+  font-size: 20px;
+}
+
+h3 {
+  margin: 18px 0 8px;
+  font-size: 16px;
+  color: #ffb74d;
+}
+
+.sub {
+  font-weight: 600;
+  margin: 8px 0 4px;
+  color: #ccc;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.dim {
+  color: #999;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+}
+
+.gap {
+  gap: 8px;
+}
+
+.wrap {
+  flex-wrap: wrap;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.scroll {
+  overflow-y: auto;
+}
+
+/* ── Inputs ──────────────────────────────────────────────────────── */
+.input,
+select.input {
+  background: #262626;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.btn {
+  background: #2e2e2e;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.btn:hover {
+  background: #3a3a3a;
+}
+
+.check {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 13px;
+  color: #ccc;
+  cursor: pointer;
+}
+
+.check.picked {
+  color: #ffb74d;
+}
+
+.error {
+  background: #3a2020;
+  border: 1px solid #7a3030;
+  color: #ff9c9c;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+/* ── Metrics / cards ─────────────────────────────────────────────── */
+.metrics {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.metric {
+  background: #212121;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 8px 14px;
+  min-width: 110px;
+}
+
+.metric-label {
+  font-size: 12px;
+  color: #999;
+}
+
+.metric-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.cards {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.card {
+  background: #212121;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 10px 14px;
+  min-width: 180px;
+}
+
+.card-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+/* ── Combat list ─────────────────────────────────────────────────── */
+.two-col {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.two-col.even {
+  flex-wrap: wrap;
+}
+
+.two-col.even > div {
+  flex: 1 1 420px;
+}
+
+.col-side {
+  width: 300px;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 90px);
+}
+
+.col-main {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 14px;
+}
+
+.combat-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: #212121;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  color: #ddd;
+  font-size: 13px;
+}
+
+.combat-item:hover {
+  background: #2a2a2a;
+}
+
+.combat-item.active {
+  border-color: #ffb74d;
+  background: #2c2620;
+}
+
+.combat-item.hidden-mark {
+  opacity: 0.6;
+}
+
+.combat-item-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+/* ── Live dot ────────────────────────────────────────────────────── */
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #777;
+  display: inline-block;
+}
+
+.dot-live {
+  background: #4CAF50;
+}
+
+.dot-error {
+  background: #e05555;
+}

@@ -1,5 +1,12 @@
 # Improvement Plan
 
+> **Superseded (2026-09-28).** The Streamlit → FastAPI + SQLite + SPA
+> migration (`docs/MIGRATION_PLAN.md`, Phases 0–5) retired the Streamlit app
+> this plan was written for. The P4/P5 Streamlit-UI items are superseded by
+> the SPA (deep links, live follow, notes/hide, exports all shipped); P1–P3
+> data-correctness items were already done. Kept for history — see the
+> post-migration backlog in `AGENTS.md` for what remains open.
+
 A prioritized, dependency-ordered plan to revive and stabilize the WoW Combat
 Viewer. Items are grouped into phases (P1–P6). Each item lists the files to
 touch, the reason, and its status.
