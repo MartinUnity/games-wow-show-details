@@ -11,8 +11,10 @@ the frozen Streamlit app) and the SQLite tables in sync.
 
 import asyncio
 import json
+import logging
 import os
 import time
+from contextlib import asynccontextmanager
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
@@ -80,11 +82,24 @@ def _combat_bounds(df: pd.DataFrame) -> dict:
 # ── App factory ──────────────────────────────────────────────────────────────
 
 
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    """Warm the memo cache at startup so the first request after a restart
+    doesn't pay the full SQLite frame reload (~2 s over 130k rows)."""
+    try:
+        deps.get_events()
+        deps.character_options()
+    except Exception:
+        logging.getLogger(__name__).warning("startup warmup failed", exc_info=True)
+    yield
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="WoW Combat Log API",
         description="REST + SSE surface over the parsed combat CSV / SQLite store.",
         version="0.3.0",
+        lifespan=_lifespan,
     )
 
     # ── Health / discovery ────────────────────────────────────────────────
