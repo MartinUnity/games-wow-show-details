@@ -178,25 +178,44 @@ _MEMO: dict = {}
 
 
 def _data_key() -> str:
-    """Changes whenever the underlying data could have changed."""
+    """Changes whenever the underlying data *could* have changed.
+
+    SQLite mode keys on the latest combat id only. The row count is
+    deliberately excluded: during tail parsing it changes on every parser
+    sync, and keying on it invalidated every memo on every SSE poll, so
+    each request paid a full frame reload + re-aggregation and stale
+    generations accumulated in ``_MEMO`` unbounded (RSS grew toward
+    ~800 MB on a live machine). Staleness between combats is bounded by
+    the caller TTLs instead.
+    """
     c = cfg()
     try:
         st = os.stat(c.CSV_PATH)
         base = f"csv:{st.st_mtime_ns}:{st.st_size}"
     except OSError:
         base = "csv:missing"
-    return base if not use_sqlite() else f"db:{watermark()}"
+    if not use_sqlite():
+        return base
+    from storage import queries
+
+    return f"db:{queries.latest_combat_id(c.DB_PATH)}"
 
 
 def memo(key: str, ttl: float, fn: Callable) -> object:
-    """Cache ``fn()`` for *ttl* seconds, keyed by (key, data generation)."""
-    full = f"{key}:{_data_key()}"
+    """Cache ``fn()`` for *ttl* seconds, keyed by (key, data generation).
+
+    At most one entry is kept per logical key: storing a new data
+    generation replaces the old one, so memory stays bounded while the
+    parser keeps appending (previously every generation retained a full
+    event frame forever and RSS grew without limit).
+    """
+    gen = _data_key()
     now = time.monotonic()
-    hit = _MEMO.get(full)
-    if hit and now - hit[0] < ttl:
-        return hit[1]
+    hit = _MEMO.get(key)
+    if hit and hit[1] == gen and now - hit[0] < ttl:
+        return hit[2]
     val = fn()
-    _MEMO[full] = (now, val)
+    _MEMO[key] = (now, gen, val)
     return val
 
 
