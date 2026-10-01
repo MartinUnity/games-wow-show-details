@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './api/client';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { useQueryState } from './hooks/useQuery';
 import { LiveProvider, useLive } from './live/LiveContext';
 import { AllEncountersView } from './views/AllEncountersView';
@@ -164,6 +165,7 @@ function Shell() {
       </aside>
 
       <main className="main">
+        <ErrorBoundary>
         {view === 'Combat Viewer' && (
           <CombatView
             character={character}
@@ -181,6 +183,7 @@ function Shell() {
         {view === 'Totals' && <TotalsView character={character} />}
         {view === 'Character Comparison' && <CharacterComparisonView />}
         {view === 'Boss Comparison' && <BossComparisonView />}
+        </ErrorBoundary>
       </main>
     </div>
   );

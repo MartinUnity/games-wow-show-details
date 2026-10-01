@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   flexRender,
   getCoreRowModel,
@@ -27,7 +27,16 @@ interface Props<T> {
   emptyText?: string;
 }
 
-/** Sortable TanStack Table with a compact dark style. */
+/**
+ * Sortable TanStack Table with a compact dark style.
+ *
+ * NOTE: `useReactTable` is a hook and must be called unconditionally at the
+ * top level. It was previously wrapped in `useMemo(...)`; when the memo
+ * skipped its callback on a re-render (unchanged `rows`/`columns`), the hook
+ * was called fewer times and React crashed the whole tree (Minified error
+ * #300 — "Rendered fewer hooks than expected"), seen when clicking a second
+ * combat in the Combat Viewer.
+ */
 export function DataTable<T>({
   columns,
   rows,
@@ -42,9 +51,7 @@ export function DataTable<T>({
       : [],
   );
 
-  const table = useMemo(
-    () =>
-      useReactTable({
+  const table = useReactTable({
         data: rows,
         state: { sorting },
         onSortingChange: setSorting,
@@ -70,9 +77,7 @@ export function DataTable<T>({
               ),
             }) satisfies ColumnDef<T, unknown>,
         ),
-      }),
-    [columns, rows, sorting],
-  );
+  });
 
   return (
     <div
